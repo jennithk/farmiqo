@@ -1,0 +1,143 @@
+name: Signed Mobile Releases
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  android-release:
+    name: Signed Android APK and AAB
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      FARMIQO_API_ORIGIN: ${{ vars.FARMIQO_API_ORIGIN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate release configuration
+        shell: bash
+        run: |
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD FARMIQO_API_ORIGIN; do
+            if [ -z "${!name}" ]; then echo "Missing required GitHub secret/variable: $name"; exit 1; fi
+          done
+          case "$FARMIQO_API_ORIGIN" in https://*) ;; *) echo "FARMIQO_API_ORIGIN must use HTTPS."; exit 1;; esac
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Configure API and signing
+        shell: bash
+        run: |
+          API_ORIGIN="${FARMIQO_API_ORIGIN%/}"
+          echo "VITE_API_URL=${API_ORIGIN}/api" >> "$GITHUB_ENV"
+          echo "VITE_SOCKET_URL=${API_ORIGIN}" >> "$GITHUB_ENV"
+          KEYSTORE_PATH="$RUNNER_TEMP/farmiqo-release.p12"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+          echo "FARMIQO_KEYSTORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+          echo "FARMIQO_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "FARMIQO_KEY_ALIAS=$ANDROID_KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "FARMIQO_KEY_PASSWORD=$ANDROID_KEY_PASSWORD" >> "$GITHUB_ENV"
+      - run: npm ci
+      - run: npm run build
+      - run: npx cap sync android
+      - run: ./gradlew --no-daemon assembleRelease bundleRelease
+        working-directory: android
+      - uses: actions/upload-artifact@v4
+        with:
+          name: farmiqo-android-release
+          path: |
+            android/app/build/outputs/apk/release/app-release.apk
+            android/app/build/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
+
+  ios-release:
+    name: Signed iOS IPA
+    runs-on: macos-15
+    env:
+      IOS_DISTRIBUTION_P12_BASE64: ${{ secrets.IOS_DISTRIBUTION_P12_BASE64 }}
+      IOS_DISTRIBUTION_P12_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_P12_PASSWORD }}
+      IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+      IOS_KEYCHAIN_PASSWORD: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
+      FARMIQO_API_ORIGIN: ${{ vars.FARMIQO_API_ORIGIN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate release configuration
+        shell: bash
+        run: |
+          for name in IOS_DISTRIBUTION_P12_BASE64 IOS_DISTRIBUTION_P12_PASSWORD IOS_PROVISIONING_PROFILE_BASE64 IOS_KEYCHAIN_PASSWORD FARMIQO_API_ORIGIN; do
+            if [ -z "${!name}" ]; then echo "Missing required GitHub secret/variable: $name"; exit 1; fi
+          done
+          case "$FARMIQO_API_ORIGIN" in https://*) ;; *) echo "FARMIQO_API_ORIGIN must use HTTPS."; exit 1;; esac
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Configure API origin
+        run: |
+          API_ORIGIN="${FARMIQO_API_ORIGIN%/}"
+          echo "VITE_API_URL=${API_ORIGIN}/api" >> "$GITHUB_ENV"
+          echo "VITE_SOCKET_URL=${API_ORIGIN}" >> "$GITHUB_ENV"
+      - name: Import Apple distribution signing assets
+        shell: bash
+        run: |
+          CERT_PATH="$RUNNER_TEMP/farmiqo-distribution.p12"
+          PROFILE_PATH="$RUNNER_TEMP/farmiqo.mobileprovision"
+          KEYCHAIN_PATH="$RUNNER_TEMP/farmiqo-build.keychain-db"
+          printf '%s' "$IOS_DISTRIBUTION_P12_BASE64" | base64 --decode > "$CERT_PATH"
+          printf '%s' "$IOS_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$PROFILE_PATH"
+          security create-keychain -p "$IOS_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$IOS_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$IOS_DISTRIBUTION_P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security cms -D -i "$PROFILE_PATH" > "$RUNNER_TEMP/profile.plist"
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c 'Print UUID' "$RUNNER_TEMP/profile.plist")
+          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c 'Print Name' "$RUNNER_TEMP/profile.plist")
+          APPLE_TEAM_ID=$(/usr/libexec/PlistBuddy -c 'Print TeamIdentifier:0' "$RUNNER_TEMP/profile.plist")
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/${PROFILE_UUID}.mobileprovision"
+          echo "IOS_KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "APPLE_TEAM_ID=$APPLE_TEAM_ID" >> "$GITHUB_ENV"
+          echo "APPLE_PROFILE_NAME=$PROFILE_NAME" >> "$GITHUB_ENV"
+      - run: npm ci
+      - run: npm run build
+      - run: npx cap sync ios
+      - name: Archive and export signed IPA
+        shell: bash
+        run: |
+          xcodebuild -workspace ios/App/App.xcworkspace -scheme App -configuration Release -archivePath "$RUNNER_TEMP/Farmiqo.xcarchive" -destination 'generic/platform=iOS' CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_IDENTITY='Apple Distribution' PROVISIONING_PROFILE_SPECIFIER="$APPLE_PROFILE_NAME" archive
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>teamID</key><string>${APPLE_TEAM_ID}</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>provisioningProfiles</key><dict>
+              <key>com.farmiqo.app</key><string>${APPLE_PROFILE_NAME}</string>
+            </dict>
+          </dict></plist>
+          EOF
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/Farmiqo.xcarchive" -exportPath "$RUNNER_TEMP/ipa" -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: farmiqo-ios-ipa
+          path: ${{ runner.temp }}/ipa/*.ipa
+          if-no-files-found: error
+      - name: Remove temporary signing material
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "$IOS_KEYCHAIN_PATH" ]; then security delete-keychain "$IOS_KEYCHAIN_PATH" || true; fi
+          rm -f "$RUNNER_TEMP/farmiqo-distribution.p12" "$RUNNER_TEMP/farmiqo.mobileprovision" "$RUNNER_TEMP/profile.plist"

@@ -1,0 +1,81 @@
+name: Mobile Builds
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Configure public API origin
+        env:
+          FARMIQO_API_ORIGIN: ${{ vars.FARMIQO_API_ORIGIN }}
+        run: |
+          if [ -z "$FARMIQO_API_ORIGIN" ]; then
+            echo "Set the repository variable FARMIQO_API_ORIGIN to the public HTTPS Render URL."
+            exit 1
+          fi
+          API_ORIGIN="${FARMIQO_API_ORIGIN%/}"
+          case "$API_ORIGIN" in https://*) ;; *) echo "FARMIQO_API_ORIGIN must use HTTPS."; exit 1;; esac
+          echo "VITE_API_URL=${API_ORIGIN}/api" >> "$GITHUB_ENV"
+          echo "VITE_SOCKET_URL=${API_ORIGIN}" >> "$GITHUB_ENV"
+      - run: npm ci
+      - run: npm run build
+      - run: npx cap sync android
+      - run: ./gradlew --no-daemon assembleDebug
+        working-directory: android
+      - uses: actions/upload-artifact@v4
+        with:
+          name: farmiqo-android-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+  ios-simulator:
+    name: iOS Simulator App
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Configure public API origin
+        env:
+          FARMIQO_API_ORIGIN: ${{ vars.FARMIQO_API_ORIGIN }}
+        run: |
+          if [ -z "$FARMIQO_API_ORIGIN" ]; then
+            echo "Set the repository variable FARMIQO_API_ORIGIN to the public HTTPS Render URL."
+            exit 1
+          fi
+          API_ORIGIN="${FARMIQO_API_ORIGIN%/}"
+          case "$API_ORIGIN" in https://*) ;; *) echo "FARMIQO_API_ORIGIN must use HTTPS."; exit 1;; esac
+          echo "VITE_API_URL=${API_ORIGIN}/api" >> "$GITHUB_ENV"
+          echo "VITE_SOCKET_URL=${API_ORIGIN}" >> "$GITHUB_ENV"
+      - run: npm ci
+      - run: npm run build
+      - run: npx cap sync ios
+      - name: Build iOS Simulator app
+        run: xcodebuild -workspace ios/App/App.xcworkspace -scheme App -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath build/ios CODE_SIGNING_ALLOWED=NO build
+      - name: Package iOS Simulator app
+        run: ditto -c -k --sequesterRsrc --keepParent build/ios/Build/Products/Debug-iphonesimulator/App.app build/farmiqo-ios-simulator.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: farmiqo-ios-simulator
+          path: build/farmiqo-ios-simulator.zip
+          if-no-files-found: error

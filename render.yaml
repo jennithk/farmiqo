@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: farmiqo-marketplace
+    runtime: node
+    plan: starter
+    region: singapore
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm run api
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: MONGODB_URI
+        sync: false
+      - key: APP_ORIGIN
+        value: capacitor://localhost,https://localhost,http://localhost
+      - key: VITE_API_URL
+        value: /api
