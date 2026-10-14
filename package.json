@@ -9,6 +9,8 @@
     "api": "node backend/server.js",
     "ui": "vite --host 0.0.0.0 --port 5173",
     "build": "vite build",
+    "check": "node --check app.js && node --check backend/server.js && node --check services/api.js && node --check services/icons.js && node --check i18n/en.js && node --check i18n/te.js && vite build",
+    "test": "node --test \"tests/**/*.mjs\"",
     "preview": "vite preview --host 0.0.0.0 --port 4173",
     "pwa": "vite build",
     "cap:sync": "npx cap sync",
@@ -37,6 +39,7 @@
     "@capacitor/android": "^7.6.9",
     "@capacitor/cli": "^7.6.9",
     "@capacitor/ios": "^7.6.9",
+    "mongodb-memory-server": "^11.3.0",
     "vite": "^6.4.4"
   }
 }

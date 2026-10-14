@@ -74,3 +74,50 @@ button{cursor:pointer}
 @media(min-width:1100px){.app-shell{max-width:1120px}.product-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.bottom-nav{width:min(1120px,100%)}.header{padding-inline:clamp(22px,3vw,38px)}}
 @media(max-width:380px){.role-screen{padding-inline:16px}.auth-card{padding:18px}.cart-item{grid-template-columns:68px minmax(0,1fr) auto;gap:8px}.cart-item img{width:68px;height:68px}.nav-item{font-size:9px}.listing img{width:96px}}
 @media(max-width:380px){.container{padding:16px}.product-card img{height:132px}.listing img{width:112px}.section-title{font-size:20px}}
+
+#app{display:flex;width:100%;justify-content:center}
+.role-screen{width:100%;max-width:640px;margin-inline:auto;padding:clamp(20px,4vw,36px) clamp(18px,4vw,32px) 28px;justify-content:center}
+.hero-logo{display:flex;align-items:center;justify-content:center;gap:12px;margin:0 0 10px;text-align:left}
+.brand-symbol{width:52px;height:52px;border-radius:15px;flex:0 0 auto}
+.hero-logo .word{font-size:clamp(28px,5vw,34px);line-height:1.05;letter-spacing:-1.4px}
+.hero-logo .tag{margin-top:5px;font-size:12px;letter-spacing:.15px}
+.brand-mark{object-fit:cover;flex:0 0 auto}
+.hero-telugu{margin:0 0 14px;font-size:clamp(15px,2.4vw,17px)}
+.hero-image{width:100%;max-width:540px;height:clamp(160px,28vh,220px);margin:0 auto 20px;border-radius:22px}
+.role-heading{margin:0 0 14px;color:var(--ink);font-size:clamp(17px,2.5vw,19px);font-weight:850;line-height:1.35}
+.role-card{width:100%;min-height:88px;margin:0 0 12px;padding:14px 16px;gap:14px;border:1px solid var(--line);border-radius:18px;box-shadow:0 3px 12px rgba(25,55,34,.045);text-align:left;transition:background-color 200ms ease,border-color 200ms ease,box-shadow 200ms ease,transform 200ms ease}
+.role-card.farmer{border-color:var(--line);background:#fff}
+.role-card:disabled{opacity:.55;cursor:not-allowed;box-shadow:none}
+.role-icon{width:52px;height:52px;border-radius:15px;background:var(--green-soft);color:var(--green);font-size:0;transition:background-color 200ms ease,color 200ms ease}
+.role-icon .ui-icon{width:25px;height:25px}
+.role-card.consumer .role-icon{background:var(--green-soft);color:var(--green)}
+.role-main{display:flex;min-width:0;flex-direction:column;gap:2px}
+.role-title,.role-te,.role-desc{display:block}
+.role-title{font-size:17px;line-height:1.3}
+.role-te{font-size:12px}
+.role-desc{font-size:12px;line-height:1.35}
+.chev{flex:0 0 auto;transition:color 200ms ease,transform 200ms ease}
+.language-picker{display:flex;justify-content:center;gap:8px;margin:6px 0 8px}
+.language-picker .chip{min-width:96px;min-height:40px}
+.role-foot{margin-top:2px;line-height:1.5}
+.auth-card{box-shadow:0 12px 32px rgba(25,55,34,.08)}
+button:not(:disabled),.install-app-btn{transition:background-color 180ms ease,border-color 180ms ease,color 180ms ease,box-shadow 180ms ease,transform 180ms ease}
+button:disabled{cursor:not-allowed;opacity:.55}
+:focus-visible{outline:3px solid rgba(47,135,51,.55);outline-offset:3px}
+.role-card:focus-visible{outline:3px solid rgba(237,145,47,.75);outline-offset:3px}
+.btn:active:not(:disabled),.sm-btn:active:not(:disabled),.add:active:not(:disabled),.icon-btn:active:not(:disabled),.chip:active:not(:disabled),.nav-item:active:not(:disabled),.install-app-btn:active:not(:disabled){transform:translateY(1px)}
+@media(hover:hover) and (pointer:fine){
+  .role-card:hover:not(:disabled){border-color:var(--green);background:#f0f8f0;box-shadow:0 8px 22px rgba(36,139,60,.12);transform:translateY(-3px)}
+  .role-card:hover:not(:disabled) .role-icon{background:var(--green);color:#fff}
+  .role-card:hover:not(:disabled) .chev{color:var(--green);transform:translateX(3px)}
+  .btn:not(:disabled):hover,.sm-btn:not(:disabled):hover,.add:not(:disabled):hover,.icon-btn:not(:disabled):hover,.chip:not(.active):not(:disabled):hover,.qty-control button:not(:disabled):hover,.nav-item:not(.active):not(:disabled):hover,.trash:not(:disabled):hover,.auth-toggle:hover,.auth-back:hover,.install-app-btn:hover{transform:translateY(-1px)}
+  .icon-btn:hover,.qty-control button:hover{background-color:#d8edd9}
+  .nav-item:not(.active):hover,.auth-toggle:hover{color:var(--green)}
+  .chip:not(.active):hover{border-color:#9bc99e;background:#f0f8f0;color:var(--green-dark)}
+  .method:not(.selected):hover{border-color:#9bc99e;box-shadow:0 4px 14px rgba(36,139,60,.08)}
+}
+.role-card:active:not(:disabled){transform:translateY(-1px);box-shadow:0 4px 14px rgba(36,139,60,.1)}
+@media(min-width:700px){.role-screen{max-width:600px}.hero-image{height:clamp(190px,26vh,230px)}}
+@media(max-height:760px){.role-screen{justify-content:flex-start}}
+@media(max-width:420px){.role-screen{padding-top:20px}.hero-image{height:clamp(145px,27vh,190px);margin-bottom:17px}.role-card{min-height:82px;padding:12px}.role-icon{width:48px;height:48px}.role-title{font-size:16px}.role-desc{font-size:11px}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}

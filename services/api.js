@@ -1,8 +1,14 @@
 import { io } from 'socket.io-client';
+import { Capacitor } from '@capacitor/core';
 
-const API_ROOT = import.meta.env.VITE_API_URL || '/api';
+const configuredApiRoot = import.meta.env.VITE_API_URL?.replace(/\/+$/, '');
+const isNativeApp = Capacitor.isNativePlatform();
+const API_ROOT = isNativeApp
+  ? (configuredApiRoot?.startsWith('https://') ? configuredApiRoot : '')
+  : configuredApiRoot || '/api';
 const TOKEN_KEY = 'farmiqo-session-token';
 let socket;
+let socketToken;
 
 export class ApiError extends Error {
   constructor(message, status, code) {
@@ -14,6 +20,9 @@ export class ApiError extends Error {
 }
 
 export async function request(path, options = {}) {
+  if (!API_ROOT) {
+    throw new ApiError('This native build has no API URL configured. Rebuild it with VITE_API_URL set.', 0, 'API_URL_NOT_CONFIGURED');
+  }
   const token = localStorage.getItem(TOKEN_KEY);
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 12000);
@@ -23,7 +32,7 @@ export async function request(path, options = {}) {
       signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(token ? { Authorization: 'Bearer ' + token } : {}),
         ...options.headers,
       },
     });
@@ -51,11 +60,13 @@ export async function authenticate(path, values) {
 
 export const register = (values) => authenticate('/auth/register', values);
 export const login = (values) => authenticate('/auth/login', values);
+export const getCurrentUser = () => request('/auth/me');
 export const logout = () => {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem('farmiqo-user');
   socket?.disconnect();
   socket = undefined;
+  socketToken = undefined;
 };
 
 export function getSavedUser() {
@@ -70,7 +81,7 @@ export const getListings = (params = {}) => {
   const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value !== '' && value !== undefined && value !== null));
   return request(`/listings${query.size ? `?${query}` : ''}`);
 };
-export const getFarmerListings = () => getListings({ farmerId: getSavedUser()?.id });
+export const getFarmerListings = () => request('/farmer/listings');
 export const createListing = (values) => request('/listings', { method: 'POST', body: JSON.stringify(values) });
 export const updateListing = (id, values) => request(`/listings/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(values) });
 export const deleteListing = (id) => request(`/listings/${encodeURIComponent(id)}`, { method: 'DELETE' });
@@ -87,11 +98,16 @@ export const getNotifications = () => request('/notifications');
 export function connectRealtime(onEvent = () => {}) {
   const token = localStorage.getItem(TOKEN_KEY);
   if (!token) return null;
-  if (!socket) {
-    const base = import.meta.env.VITE_SOCKET_URL || window.location.origin;
-    socket = io(base, { auth: { token }, transports: ['websocket', 'polling'], reconnection: true, reconnectionAttempts: Infinity });
+  if (socket && socketToken !== token) {
+    socket.disconnect();
+    socket = undefined;
   }
-  const events = ['listing:created', 'listing:updated', 'listing:stockUpdated', 'order:created', 'order:accepted', 'order:rejected', 'order:preparing', 'order:ready', 'order:dispatched', 'order:delivered', 'order:completed', 'notification:new'];
+  if (!socket) {
+    const base = new URL(API_ROOT, window.location.origin).origin;
+    socket = io(base, { auth: { token }, transports: ['websocket', 'polling'], reconnection: true, reconnectionAttempts: Infinity });
+    socketToken = token;
+  }
+  const events = ['listing:created', 'listing:updated', 'listing:stockUpdated', 'order:created', 'order:accepted', 'order:rejected', 'order:cancelled', 'order:preparing', 'order:ready', 'order:dispatched', 'order:delivered', 'order:completed', 'notification:new'];
   for (const event of events) socket.off(event);
   for (const event of events) socket.on(event, (payload) => onEvent(event, payload));
   return socket;

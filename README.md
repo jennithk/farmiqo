@@ -42,12 +42,12 @@ npm run android:release # build a signed release APK
 npm run android:aab     # build a signed Google Play bundle
 ```
 
-API defaults to port 3000. Vite proxies `/api` and `/socket.io` to it. Configure `API_PORT`, `APP_ORIGIN`, `MONGODB_URI`, `JWT_SECRET`, and optional `DELIVERY_FEE` in the backend environment. `VITE_API_URL` and `VITE_SOCKET_URL` are build-time frontend settings; never put private secrets in `VITE_*` variables.
+API defaults to port 3000. Vite proxies `/api` and `/socket.io` to it. Configure `API_PORT`, `APP_ORIGIN`, `MONGODB_URI`, `JWT_SECRET`, and optional `DELIVERY_FEE` in the backend environment. `VITE_API_URL` is a build-time frontend setting; the Socket.IO origin is derived from it. Never put private secrets in `VITE_*` variables.
 
 ## Current API
 
 - `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me`
-- `GET /api/listings`, `GET /api/listings/:id`, and authenticated farmer create/update/delete routes
+- `GET /api/listings`, `GET /api/listings/:id`, authenticated farmer inventory, and farmer create/update/delete routes
 - Authenticated consumer cart read/add/update/remove routes
 - `POST /api/orders`, consumer order history/detail, and farmer order listing/status routes
 - `GET /api/notifications`
@@ -65,11 +65,14 @@ Passwords are bcrypt-hashed and account access uses JWT. Order creation validate
 
 ## Public deployment
 
-The repository includes `render.yaml` for a single-origin deployment. Push this project to a GitHub repository, then in Render choose **New > Blueprint**, connect that repository, and apply the blueprint. The `starter` web-service plan is paid; review Render's current pricing before confirming. Render generates the production `JWT_SECRET`; enter the MongoDB Atlas URI when prompted for `MONGODB_URI`. The resulting HTTPS service hosts the UI, REST API, and Socket.IO endpoint at one public URL. The API uses Render's assigned URL plus the Capacitor origins for CORS.
+> Owner policy: do **not** use Render for Farmiqo (`render.yaml` was removed).
+> Follow [`DEPLOYMENT.md`](DEPLOYMENT.md) for the approved cloud path: Railway backend
+> (Dockerfile + `railway.json` in this repo) + MongoDB Atlas M0. Deployment itself still
+> awaits the owner's cloud-account connection — see [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md).
 
-Before launching Render, create a MongoDB Atlas replica-set cluster and database user. In Atlas Network Access, allow the Render service to connect; for initial setup, Atlas may require `0.0.0.0/0` because Render's outbound IPs are not fixed on this plan. Use a unique database user/password and keep its URI only in Render's `MONGODB_URI` secret field. The readiness check returns HTTP 503 until Atlas accepts the connection.
+Create a MongoDB Atlas replica-set cluster and database user first (free M0 tier is sufficient to start; see [`DATABASE.md`](DATABASE.md)). In Atlas Network Access, allow the backend host to connect; use the narrowest practical network rule and a unique database user/password. Keep the URI only in the host's secret manager. The readiness check (`GET /api/health`) returns HTTP 503 until Atlas connects.
 
-After deployment, set the GitHub repository **variable** `FARMIQO_API_ORIGIN` to the service's public HTTPS origin (for example, `https://farmiqo-marketplace.onrender.com`). The `Mobile Builds` workflow runs manually or on version tags and publishes an Android debug APK plus an iOS Simulator app as workflow artifacts. Once the workflow completes, download the APK from the run's **Artifacts** section. No connected phone or developer computer is needed to produce these artifacts.
+After the backend is deployed, set the GitHub repository **variable** `FARMIQO_API_ORIGIN` to the service's public HTTPS origin (for example, `https://farmiqo-api.example.com`). The `Mobile Builds` workflow runs manually or on version tags and publishes an Android debug APK plus an iOS Simulator app as workflow artifacts. Once the workflow completes, download the APK from the run's **Artifacts** section. No connected phone or developer computer is needed to produce these artifacts.
 
 Add `MONGODB_URI` only to Render's secret environment configuration. Keep the generated JWT secret managed by Render. Never put either secret in GitHub variables or source code. Do not commit `.env`.
 
@@ -89,6 +92,8 @@ npm run android
 ```
 
 The project and SDK are configured locally. `npm run android:debug` creates `android/app/build/outputs/apk/debug/app-debug.apk`; `npm run android:release` creates a signed release APK; `npm run android:aab` creates a signed Play bundle. Android Studio is optional for these Gradle builds.
+
+Native builds need a reachable HTTPS API origin at build time. Set `VITE_API_URL` to `<API_ORIGIN>/api` before `npm run build` and `npx cap sync`. The GitHub mobile workflows require the repository variable `FARMIQO_API_ORIGIN` and configure this automatically. A native build without an API URL stops with a configuration error instead of sending requests to the device's local WebView.
 
 To create the local release key and persist its signing values in your Windows user environment (the key is stored outside the repository):
 
@@ -121,4 +126,15 @@ The official logo shown in the conversation is not available as a file in this w
 
 ## Known external requirements
 
-A public marketplace becomes ready after the Render Blueprint is applied and Atlas accepts `MONGODB_URI`. GitHub mobile builds require the repository variable `FARMIQO_API_ORIGIN`. Native iOS device distribution requires Apple signing credentials; until then, use the Safari-installed PWA or the iOS Simulator workflow artifact. The official logo file must be added to `public/` before branded platform icons can be generated. UPI remains mock; no payment gateway is connected.
+A public marketplace becomes ready after the backend is deployed per [`DEPLOYMENT.md`](DEPLOYMENT.md) and Atlas accepts `MONGODB_URI`. GitHub mobile builds require the repository variable `FARMIQO_API_ORIGIN`. Native iOS device distribution requires Apple signing credentials; until then, use the Safari-installed PWA or the iOS Simulator workflow artifact. The official logo file must be added to `public/` before branded platform icons can be generated. UPI remains mock; no payment gateway is connected.
+
+## Documentation index
+
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — technical architecture and the Capacitor-vs-Expo decision.
+- [`DEPLOYMENT.md`](DEPLOYMENT.md) — cloud deployment instructions (Render-free path).
+- [`MOBILE_BUILD.md`](MOBILE_BUILD.md) — Android and iOS build instructions.
+- [`DATABASE.md`](DATABASE.md) — database design, indexes, and migrations.
+- [`API_DOCUMENTATION.md`](API_DOCUMENTATION.md) — endpoint reference.
+- [`SECURITY.md`](SECURITY.md) — security architecture and configuration.
+- [`TESTING.md`](TESTING.md) — test procedures and honest results.
+- [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) — production readiness, store metadata, privacy/terms drafts.

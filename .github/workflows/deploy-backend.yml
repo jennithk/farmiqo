@@ -1,0 +1,65 @@
+name: Backend Test and Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "services/**"
+      - "app.js"
+      - "i18n/**"
+      - "index.html"
+      - "styles.css"
+      - "public/**"
+      - "tests/**"
+      - "package.json"
+      - "package-lock.json"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "railway.json"
+      - ".github/workflows/deploy-backend.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Check, Build, Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+
+  deploy:
+    name: Deploy to Railway
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    # Expose the token via job-level env so step conditions can use the
+    # allowed `env` context instead of `secrets` directly. Value is masked.
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy with Railway CLI
+        # Skips cleanly until the owner stores RAILWAY_TOKEN (see DEPLOYMENT.md).
+        # RAILWAY_TOKEN is a project token, so it already scopes the project;
+        # service and environment are pinned explicitly for non-interactive runs.
+        if: env.RAILWAY_TOKEN != ''
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_SERVICE_NAME: ${{ vars.RAILWAY_SERVICE_NAME }}
+          RAILWAY_ENVIRONMENT_NAME: ${{ vars.RAILWAY_ENVIRONMENT_NAME }}
+        run: |
+          npm install --global @railway/cli
+          railway up --service "${RAILWAY_SERVICE_NAME:-farmiqo-api}" --environment "${RAILWAY_ENVIRONMENT_NAME:-production}"
+      - name: Deployment skipped
+        if: env.RAILWAY_TOKEN == ''
+        run: echo "RAILWAY_TOKEN is not set. Tests passed; connect Railway per DEPLOYMENT.md to enable deploys."

@@ -34,7 +34,6 @@ jobs:
           API_ORIGIN="${FARMIQO_API_ORIGIN%/}"
           case "$API_ORIGIN" in https://*) ;; *) echo "FARMIQO_API_ORIGIN must use HTTPS."; exit 1;; esac
           echo "VITE_API_URL=${API_ORIGIN}/api" >> "$GITHUB_ENV"
-          echo "VITE_SOCKET_URL=${API_ORIGIN}" >> "$GITHUB_ENV"
       - run: npm ci
       - run: npm run build
       - run: npx cap sync android
@@ -66,7 +65,6 @@ jobs:
           API_ORIGIN="${FARMIQO_API_ORIGIN%/}"
           case "$API_ORIGIN" in https://*) ;; *) echo "FARMIQO_API_ORIGIN must use HTTPS."; exit 1;; esac
           echo "VITE_API_URL=${API_ORIGIN}/api" >> "$GITHUB_ENV"
-          echo "VITE_SOCKET_URL=${API_ORIGIN}" >> "$GITHUB_ENV"
       - run: npm ci
       - run: npm run build
       - run: npx cap sync ios

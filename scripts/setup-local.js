@@ -21,7 +21,7 @@ const lines = content.split(/\r?\n/).filter((line, index, all) => line || index 
 const updated = lines.map((line) => {
   if (line.startsWith('JWT_SECRET=')) {
     hasSecret = true;
-    return /^JWT_SECRET=(?:|replace-with-a-long-random-secret)$/.test(line) ? `JWT_SECRET=${generatedSecret}` : line;
+    return /^JWT_SECRET=(?:|replace-with-a-long-random-secret|replace-with-a-random-secret-of-at-least-32-characters)$/.test(line) ? `JWT_SECRET=${generatedSecret}` : line;
   }
   if (line.startsWith('MONGODB_URI=')) {
     hasMongoUri = true;

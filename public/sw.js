@@ -1,11 +1,14 @@
-const CACHE_NAME = 'farmiqo-shell-v1';
+const CACHE_NAME = 'farmiqo-shell-v4';
 const APP_SHELL = [
   '/',
   '/index.html',
   '/styles.css',
   '/manifest.webmanifest',
   '/icon.svg',
-  '/favicon.svg',
+  '/icons/icon-192.png',
+  '/icons/icon-512.png',
+  '/icons/icon-maskable-512.png',
+  '/icons/apple-touch-icon.png',
 ];
 
 self.addEventListener('install', (event) => {
@@ -19,7 +22,7 @@ self.addEventListener('activate', (event) => {
     caches.keys().then((keys) =>
       Promise.all(
         keys
-          .filter((key) => key !== CACHE_NAME)
+          .filter((key) => key.startsWith('farmiqo-shell-') && key !== CACHE_NAME)
           .map((key) => caches.delete(key))
       )
     ).then(() => self.clients.claim())
@@ -33,6 +36,8 @@ self.addEventListener('fetch', (event) => {
   const isSameOrigin = url.origin === self.location.origin;
 
   if (!isSameOrigin) return;
+  if (url.pathname === '/api' || url.pathname.startsWith('/api/') || url.pathname.startsWith('/socket.io/')) return;
+  if (event.request.headers.has('authorization') || event.request.credentials === 'include') return;
 
   if (url.pathname.endsWith('.png') || url.pathname.endsWith('.jpg') || url.pathname.endsWith('.jpeg') || url.pathname.endsWith('.svg') || url.pathname.endsWith('.webp') || url.pathname.endsWith('.gif')) {
     event.respondWith(
