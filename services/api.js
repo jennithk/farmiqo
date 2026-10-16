@@ -94,6 +94,25 @@ export const getOrders = () => request('/orders');
 export const getFarmerOrders = () => request('/farmer/orders');
 export const updateOrderStatus = (id, status) => request(`/orders/${encodeURIComponent(id)}/status`, { method: 'PATCH', body: JSON.stringify({ status }) });
 export const getNotifications = () => request('/notifications');
+export const requestPasswordReset = (email) => request('/auth/forgot', { method: 'POST', body: JSON.stringify({ email }) });
+export const confirmPasswordReset = (token, password) => request('/auth/reset', { method: 'POST', body: JSON.stringify({ token, password }) });
+export const deleteAccount = (password) => request('/users/me', { method: 'DELETE', body: JSON.stringify({ password }) });
+export const updateProfile = (values) => request('/users/me', { method: 'PUT', body: JSON.stringify(values) });
+export const getBulkGroups = (params = {}) => {
+  const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value !== '' && value !== undefined && value !== null));
+  return request(`/bulk/groups${query.size ? `?${query}` : ''}`);
+};
+export const getBulkGroup = (id) => request(`/bulk/groups/${encodeURIComponent(id)}`);
+export const createBulkGroup = (values) => request('/bulk/groups', { method: 'POST', body: JSON.stringify(values) });
+export const joinBulkGroup = (id, quantity, address, pincode) => request(`/bulk/groups/${encodeURIComponent(id)}/join`, { method: 'POST', body: JSON.stringify({ quantity, ...(address !== undefined ? { address } : {}), ...(pincode !== undefined ? { pincode } : {}) }) });
+export const assignBulkGroup = (id) => request(`/bulk/groups/${encodeURIComponent(id)}/assign`, { method: 'POST' });
+export const unassignBulkGroup = (id) => request(`/bulk/groups/${encodeURIComponent(id)}/unassign`, { method: 'POST' });
+export const leaveBulkGroup = (id) => request(`/bulk/groups/${encodeURIComponent(id)}/leave`, { method: 'POST' });
+export const cancelBulkGroup = (id) => request(`/bulk/groups/${encodeURIComponent(id)}/cancel`, { method: 'POST' });
+export const fulfilBulkGroup = (id) => request(`/bulk/groups/${encodeURIComponent(id)}/fulfil`, { method: 'POST' });
+export const getForecast = () => request('/farmer/forecast');
+export const getUploadConfig = () => request('/uploads/config');
+export const getUploadSignature = () => request('/uploads/signature', { method: 'POST' });
 
 export function connectRealtime(onEvent = () => {}) {
   const token = localStorage.getItem(TOKEN_KEY);
@@ -107,7 +126,7 @@ export function connectRealtime(onEvent = () => {}) {
     socket = io(base, { auth: { token }, transports: ['websocket', 'polling'], reconnection: true, reconnectionAttempts: Infinity });
     socketToken = token;
   }
-  const events = ['listing:created', 'listing:updated', 'listing:stockUpdated', 'order:created', 'order:accepted', 'order:rejected', 'order:cancelled', 'order:preparing', 'order:ready', 'order:dispatched', 'order:delivered', 'order:completed', 'notification:new'];
+  const events = ['listing:created', 'listing:updated', 'listing:stockUpdated', 'order:created', 'order:accepted', 'order:rejected', 'order:cancelled', 'order:preparing', 'order:ready', 'order:dispatched', 'order:delivered', 'order:completed', 'notification:new', 'bulk:updated'];
   for (const event of events) socket.off(event);
   for (const event of events) socket.on(event, (payload) => onEvent(event, payload));
   return socket;

@@ -49,5 +49,16 @@ Without a database, all `/api/*` except static handling return `503 DATABASE_UNA
 
 ## Planned (not implemented)
 
-Bulk-group CRUD/membership and forecast endpoints — specified in `DATABASE.md`, no routes ship yet.
-Password recovery — no endpoint until a delivery channel is approved.
+Bulk groups: `POST /api/bulk/groups` (any authenticated user; listing-bound farmer offer
+or named community group), `GET /api/bulk/groups`
+(`?status,model,pincode,farmerId,assignedFarmerId`), `GET /api/bulk/groups/:id`,
+`POST …/join` (consumer, atomic target guard; delivery address+pincode always required),
+`POST …/leave`, `POST …/assign` (farmer self-assign with matching-stock eligibility check),
+`POST …/unassign`, `POST …/cancel` (creator or assignee), `POST …/fulfil` (assignee;
+transactionally mints one COD `DELIVERY` order per participant using join-time addresses).
+Forecast: `GET /api/farmer/forecast` (rule-based, `insufficientData` flag when sparse).
+Auth recovery: `POST /api/auth/forgot` (generic 200; 503 until mail configured),
+`POST /api/auth/reset` (single-use, 1-hour tokens). Uploads: `GET /api/uploads/config`,
+`POST /api/uploads/signature` (farmer, Cloudinary signed params; 503 until configured).
+Account: `PUT /api/users/me` (editable name/phone/farm/location/pincode; email+role immutable),
+`DELETE /api/users/me` (password-gated; listings withdrawn, orders kept as records).

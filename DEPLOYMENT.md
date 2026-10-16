@@ -53,6 +53,11 @@ Page: service **Variables** → add exactly these (paste values into Railway, ne
 | `APP_ORIGIN` | Your Railway domain from Step 2 (e.g. `https://farmiqo-api.up.railway.app`) |
 | `DELIVERY_FEE` | `0` |
 | `NODE_ENV` | `production` |
+| `BREVO_API_KEY` | Brevo API key — enables `/api/auth/forgot` mail (optional; reset stays honestly disabled without it) |
+| `RESET_FROM_EMAIL` | Verified Brevo sender address for reset mail (optional, with the key above) |
+| `RESET_FROM_NAME` | `Farmiqo` (optional) |
+| `APP_PUBLIC_URL` | Public frontend origin used in reset links (optional; defaults to the production domain) |
+| `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | Cloudinary free-tier credentials — enable signed product-photo uploads (optional; upload UI stays disabled without them) |
 
 `PORT` is injected by Railway automatically — do not set it. Redeploy after saving; then open
 `https://<your-domain>/api/ready` (expect `{"ok":true,…"ready":true}`) and

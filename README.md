@@ -46,12 +46,14 @@ API defaults to port 3000. Vite proxies `/api` and `/socket.io` to it. Configure
 
 ## Current API
 
-- `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me`
+- `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me`, `POST /api/auth/forgot`, `POST /api/auth/reset`, `PUT /api/users/me`, `DELETE /api/users/me`
 - `GET /api/listings`, `GET /api/listings/:id`, authenticated farmer inventory, and farmer create/update/delete routes
 - Authenticated consumer cart read/add/update/remove routes
 - `POST /api/orders`, consumer order history/detail, and farmer order listing/status routes
+- Bulk groups: farmer create, public discovery, consumer join/leave, farmer cancel/fulfil (fulfil mints COD pickup orders)
+- `GET /api/farmer/forecast` (rule-based, no ML), `GET /api/uploads/config` + `POST /api/uploads/signature` (farmer)
 - `GET /api/notifications`
-- `GET /api/health`
+- `GET /api/health`, `GET /api/ready`
 
 Passwords are bcrypt-hashed and account access uses JWT. Order creation validates all listing stock on the server and uses MongoDB transactions and conditional stock decrements to prevent overselling. Prices are snapshotted into orders. COD is recorded as pending and marked paid when the farmer records delivery; UPI is explicitly a mock choice. Socket.IO requires a valid session token and emits listing, order, and notification events.
 
@@ -74,7 +76,7 @@ Create a MongoDB Atlas replica-set cluster and database user first (free M0 tier
 
 After the backend is deployed, set the GitHub repository **variable** `FARMIQO_API_ORIGIN` to the service's public HTTPS origin (for example, `https://farmiqo-api.example.com`). The `Mobile Builds` workflow runs manually or on version tags and publishes an Android debug APK plus an iOS Simulator app as workflow artifacts. Once the workflow completes, download the APK from the run's **Artifacts** section. No connected phone or developer computer is needed to produce these artifacts.
 
-Add `MONGODB_URI` only to Render's secret environment configuration. Keep the generated JWT secret managed by Render. Never put either secret in GitHub variables or source code. Do not commit `.env`.
+Add `MONGODB_URI` only to the Railway service's secret environment configuration. Keep the production JWT secret managed by Railway. Never put either secret in GitHub variables or source code. Do not commit `.env`. Optional integrations (`BREVO_*`, `CLOUDINARY_*`, `APP_PUBLIC_URL`, `MAILER_PROVIDER`) are documented in [`.env.example`](.env.example) and [`DEPLOYMENT.md`](DEPLOYMENT.md); without them, reset mail and direct uploads stay honestly disabled (503).
 
 ## PWA and HTTPS deployment
 

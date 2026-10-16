@@ -65,6 +65,7 @@ const listingSchema = new mongoose.Schema({
   chemicalUsage: { type: String, default: 'Not specified' },
   grade: { type: String, default: 'A' },
   imageUrl: { type: String, default: '' },
+  imageSource: { type: String, enum: ['', 'photo', 'url', 'ai', 'asset'], default: '' },
   deliveryAvailable: { type: Boolean, default: true },
   pickupAvailable: { type: Boolean, default: true },
   status: { type: String, enum: ['ACTIVE', 'PAUSED', 'DELETED'], default: 'ACTIVE', index: true },
@@ -121,11 +122,57 @@ const notificationSchema = new mongoose.Schema({
   readAt: Date,
 }, { timestamps: true });
 
+const bulkGroupSchema = new mongoose.Schema({
+  groupId: { type: String, unique: true, index: true },
+  model: { type: String, enum: ['offer', 'community'], default: 'offer', index: true },
+  farmerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  assignedFarmerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+  assignmentHistory: [{
+    farmerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    farmerName: String,
+    action: { type: String, enum: ['assigned', 'unassigned'], default: 'assigned' },
+    assignedBy: String,
+    at: { type: Date, default: Date.now },
+  }],
+  listingId: { type: mongoose.Schema.Types.ObjectId, ref: 'Listing', default: null, index: true },
+  productName: String,
+  priceAtOffer: Number,
+  priceUnit: String,
+  imageUrl: String,
+  targetQuantity: { type: Number, required: true, min: 0.01 },
+  minPerParticipant: { type: Number, default: 1, min: 0.01 },
+  maxPerParticipant: { type: Number, default: null },
+  slotDate: { type: Date, default: null },
+  pickupNote: { type: String, default: '' },
+  deliveryInfo: { type: String, default: '' },
+  pincode: { type: String, default: '', index: true },
+  status: { type: String, enum: ['OPEN', 'TARGET_REACHED', 'ASSIGNED', 'FULFILLING', 'COMPLETED', 'CANCELLED', 'AGGREGATED', 'FULFILLED'], default: 'OPEN', index: true },
+  participants: [{
+    consumerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    consumerName: String,
+    quantity: Number,
+    address: { type: String, default: '' },
+    pincode: { type: String, default: '' },
+    joinedAt: { type: Date, default: Date.now },
+  }],
+  collectedQuantity: { type: Number, default: 0 },
+}, { timestamps: true });
+
+const resetSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  tokenHash: { type: String, required: true, unique: true },
+  expiresAt: { type: Date, required: true },
+  usedAt: { type: Date, default: null },
+}, { timestamps: true });
+resetSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
 const User = mongoose.model('User', userSchema);
 const Listing = mongoose.model('Listing', listingSchema);
 const Cart = mongoose.model('Cart', cartSchema);
 const Order = mongoose.model('Order', orderSchema);
 const Notification = mongoose.model('Notification', notificationSchema);
+const BulkGroup = mongoose.model('BulkGroup', bulkGroupSchema);
+const PasswordReset = mongoose.model('PasswordReset', resetSchema);
 
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
@@ -193,6 +240,71 @@ const isSafeImageUrl = (value) => {
   }
 };
 
+const testMailOutbox = [];
+function mailerConfigured() {
+  if (process.env.MAILER_PROVIDER === 'test' && process.env.NODE_ENV !== 'production') return true;
+  return Boolean(process.env.BREVO_API_KEY && process.env.RESET_FROM_EMAIL);
+}
+// Transactional mail via Brevo HTTPS API (Railway free tier blocks outbound SMTP).
+// Test hook: MAILER_PROVIDER=test captures mail in memory; honored only outside production.
+async function sendMail({ to, subject, html }) {
+  if (process.env.MAILER_PROVIDER === 'test' && process.env.NODE_ENV !== 'production') {
+    testMailOutbox.push({ to, subject, html });
+    return;
+  }
+  const apiKey = process.env.BREVO_API_KEY;
+  const fromEmail = process.env.RESET_FROM_EMAIL;
+  if (!apiKey || !fromEmail) throw Object.assign(new Error('Email delivery is not configured'), { status: 503, code: 'EMAIL_DELIVERY_NOT_CONFIGURED' });
+  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: { 'api-key': apiKey, 'Content-Type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify({ sender: { email: fromEmail, name: process.env.RESET_FROM_NAME || 'Farmiqo' }, to: [{ email: to }], subject, htmlContent: html }),
+  });
+  if (!res.ok) throw Object.assign(new Error('Email delivery failed'), { status: 502, code: 'EMAIL_DELIVERY_FAILED' });
+}
+function uploadsConfigured() {
+  return Boolean(process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET);
+}
+
+// Legacy statuses stay readable: AGGREGATED means TARGET_REACHED, FULFILLED means COMPLETED.
+const canonGroupStatus = (status) => status === 'AGGREGATED' ? 'TARGET_REACHED' : status === 'FULFILLED' ? 'COMPLETED' : status;
+const READY_STATUSES = ['TARGET_REACHED', 'ASSIGNED', 'AGGREGATED'];
+
+function bulkGroupView(group) {
+  const farmer = group.farmerId;
+  const assignee = group.assignedFarmerId && typeof group.assignedFarmerId === 'object' ? group.assignedFarmerId : null;
+  const supplier = assignee || (group.model === 'offer' ? farmer : null);
+  return {
+    id: group.id,
+    groupId: group.groupId,
+    model: group.model,
+    productName: group.productName,
+    priceAtOffer: group.priceAtOffer,
+    priceUnit: group.priceUnit,
+    imageUrl: group.imageUrl,
+    targetQuantity: group.targetQuantity,
+    minPerParticipant: group.minPerParticipant,
+    maxPerParticipant: group.maxPerParticipant,
+    slotDate: group.slotDate,
+    pickupNote: group.pickupNote,
+    deliveryInfo: group.deliveryInfo,
+    pincode: group.pincode,
+    status: group.status,
+    participants: (group.participants || []).map((p) => ({ consumerId: String(p.consumerId), consumerName: p.consumerName, quantity: p.quantity })),
+    participantCount: (group.participants || []).length,
+    collectedQuantity: group.collectedQuantity,
+    remainingQuantity: Math.max(0, Math.round((group.targetQuantity - group.collectedQuantity) * 100) / 100),
+    farmer: farmer && farmer.name ? farmerSummary(farmer) : null,
+    farmerName: farmer?.name || '',
+    farmerId: farmer ? String(farmer._id || farmer) : (group.farmerId ? String(group.farmerId._id || group.farmerId) : null),
+    assignedFarmer: assignee && assignee.name ? farmerSummary(assignee) : null,
+    assignedFarmerId: group.assignedFarmerId ? String(group.assignedFarmerId._id || group.assignedFarmerId) : null,
+    assignedFarmerName: assignee?.name || supplier?.name || '',
+    assignmentHistory: (group.assignmentHistory || []).map((h) => ({ farmerName: h.farmerName, action: h.action, assignedBy: h.assignedBy, at: h.at })),
+    createdAt: group.createdAt,
+  };
+}
+
 async function authenticate(req, res, next) {
   try {
     const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
@@ -245,6 +357,7 @@ function listingView(listing) {
     chemicalUsage: listing.chemicalUsage,
     grade: listing.grade,
     img: listing.imageUrl,
+    imageSource: listing.imageSource || '',
     deliveryAvailable: listing.deliveryAvailable,
     pickupAvailable: listing.pickupAvailable,
     status: listing.status,
@@ -302,6 +415,38 @@ app.post('/api/auth/login', limitAuthAttempts, async (req, res, next) => {
 
 app.get('/api/auth/me', authenticate, (req, res) => response(res, 200, safeUser(req.user)));
 
+app.put('/api/users/me', authenticate, async (req, res, next) => {
+  try {
+    // Email and role are intentionally not editable here.
+    const { name, phone, farmName, location, pincode } = req.body || {};
+    const changes = {};
+    if (name !== undefined) {
+      if (typeof name !== 'string' || !name.trim() || name.trim().length > 100) return response(res, 400, { code: 'INVALID_PROFILE', message: 'Name must be 1-100 characters' });
+      changes.name = name.trim();
+    }
+    if (phone !== undefined) {
+      if (typeof phone !== 'string' || phone.length > 32) return response(res, 400, { code: 'INVALID_PROFILE', message: 'Phone number is too long' });
+      changes.phone = phone.trim();
+    }
+    if (farmName !== undefined) {
+      if (typeof farmName !== 'string' || farmName.length > 120) return response(res, 400, { code: 'INVALID_PROFILE', message: 'Farm name is too long' });
+      changes.farmName = farmName.trim();
+    }
+    if (location !== undefined) {
+      if (typeof location !== 'string' || location.length > 160) return response(res, 400, { code: 'INVALID_PROFILE', message: 'Location is too long' });
+      changes.location = location.trim();
+    }
+    if (pincode !== undefined) {
+      if (typeof pincode !== 'string' || (pincode && !/^\d{6}$/.test(pincode))) return response(res, 400, { code: 'INVALID_PROFILE', message: 'Pincode must be 6 digits' });
+      changes.pincode = pincode;
+    }
+    if (!Object.keys(changes).length) return response(res, 200, safeUser(req.user));
+    const user = await User.findByIdAndUpdate(req.user.id, changes, { new: true, runValidators: true });
+    if (!user) return response(res, 401, { code: 'INVALID_SESSION', message: 'Session is no longer valid' });
+    return response(res, 200, safeUser(user));
+  } catch (error) { next(error); }
+});
+
 app.get('/api/listings', async (req, res, next) => {
   try {
     const filter = { status: 'ACTIVE', quantity: { $gt: 0 } };
@@ -347,7 +492,7 @@ app.get('/api/listings/:id', async (req, res, next) => {
 
 app.post('/api/listings', authenticate, requireRole('FARMER'), async (req, res, next) => {
   try {
-    const { productName, category, description = '', price, quantity, minOrderQuantity = 1, maxOrderQuantity, harvestedAt, location = '', pincode = req.user.pincode, farmingMethod, chemicalUsage, grade, imageUrl = '', deliveryAvailable = true, pickupAvailable = true } = req.body || {};
+    const { productName, category, description = '', price, quantity, minOrderQuantity = 1, maxOrderQuantity, harvestedAt, location = '', pincode = req.user.pincode, farmingMethod, chemicalUsage, grade, imageUrl = '', imageSource = '', deliveryAvailable = true, pickupAvailable = true } = req.body || {};
     const minQuantity = Number(minOrderQuantity);
     const maxQuantity = maxOrderQuantity == null || maxOrderQuantity === '' ? null : Number(maxOrderQuantity);
     if (
@@ -358,11 +503,13 @@ app.post('/api/listings', authenticate, requireRole('FARMER'), async (req, res, 
       (maxQuantity !== null && (!Number.isFinite(maxQuantity) || maxQuantity < minQuantity)) ||
       (typeof pincode !== 'string' || (pincode && !/^\d{6}$/.test(pincode))) ||
       !isSafeImageUrl(imageUrl) ||
+      !['', 'photo', 'url', 'ai', 'asset'].includes(imageSource) ||
+      (imageSource === 'ai' && !imageUrl) ||
       !harvestedAt || Number.isNaN(Date.parse(harvestedAt))
     ) {
       return response(res, 400, { code: 'INVALID_LISTING', message: 'Product, valid price, quantity, and harvest date are required' });
     }
-    const listing = await Listing.create({ farmerId: req.user.id, productName: productName.trim(), category, description, price: Number(price), quantity: Number(quantity), minOrderQuantity: minQuantity, maxOrderQuantity: maxQuantity, harvestedAt, location, pincode, farmingMethod, chemicalUsage, grade, imageUrl, deliveryAvailable, pickupAvailable });
+    const listing = await Listing.create({ farmerId: req.user.id, productName: productName.trim(), category, description, price: Number(price), quantity: Number(quantity), minOrderQuantity: minQuantity, maxOrderQuantity: maxQuantity, harvestedAt, location, pincode, farmingMethod, chemicalUsage, grade, imageUrl, imageSource, deliveryAvailable, pickupAvailable });
     const full = await listing.populate('farmerId');
     const data = listingView(full);
     io.emit('listing:created', data);
@@ -373,7 +520,7 @@ app.post('/api/listings', authenticate, requireRole('FARMER'), async (req, res, 
 app.put('/api/listings/:id', authenticate, requireRole('FARMER'), async (req, res, next) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) return response(res, 404, { code: 'LISTING_NOT_FOUND', message: 'Listing not found' });
-    const allowed = ['productName', 'category', 'description', 'price', 'quantity', 'minOrderQuantity', 'maxOrderQuantity', 'harvestedAt', 'availableFrom', 'availableUntil', 'location', 'pincode', 'farmingMethod', 'chemicalUsage', 'grade', 'imageUrl', 'deliveryAvailable', 'pickupAvailable', 'status'];
+    const allowed = ['productName', 'category', 'description', 'price', 'quantity', 'minOrderQuantity', 'maxOrderQuantity', 'harvestedAt', 'availableFrom', 'availableUntil', 'location', 'pincode', 'farmingMethod', 'chemicalUsage', 'grade', 'imageUrl', 'imageSource', 'deliveryAvailable', 'pickupAvailable', 'status'];
     const changes = Object.fromEntries(Object.entries(req.body || {}).filter(([key]) => allowed.includes(key)));
     const invalid =
       (changes.productName !== undefined && (typeof changes.productName !== 'string' || !changes.productName.trim() || changes.productName.trim().length > 120)) ||
@@ -389,6 +536,7 @@ app.put('/api/listings/:id', authenticate, requireRole('FARMER'), async (req, re
       (changes.chemicalUsage !== undefined && (typeof changes.chemicalUsage !== 'string' || changes.chemicalUsage.length > 80)) ||
       (changes.grade !== undefined && (typeof changes.grade !== 'string' || changes.grade.length > 20)) ||
       (changes.imageUrl !== undefined && !isSafeImageUrl(changes.imageUrl)) ||
+      (changes.imageSource !== undefined && !['', 'photo', 'url', 'ai', 'asset'].includes(changes.imageSource)) ||
       (['harvestedAt', 'availableFrom', 'availableUntil'].some((key) => changes[key] !== undefined && changes[key] !== null && changes[key] !== '' && Number.isNaN(Date.parse(changes[key]))));
     if (invalid) return response(res, 400, { code: 'INVALID_LISTING', message: 'One or more listing fields are invalid' });
     if (changes.status !== undefined && !['ACTIVE', 'PAUSED'].includes(changes.status)) return response(res, 400, { code: 'INVALID_STATUS', message: 'Status must be ACTIVE or PAUSED. Use the delete route to remove a listing.' });
@@ -657,6 +805,468 @@ app.patch('/api/orders/:id/status', authenticate, requireRole('FARMER'), async (
 app.get('/api/notifications', authenticate, async (req, res, next) => {
   try { return response(res, 200, await Notification.find({ userId: req.user.id }).sort({ createdAt: -1 }).limit(100)); }
   catch (error) { next(error); }
+});
+
+app.post('/api/bulk/groups', authenticate, async (req, res, next) => {
+  try {
+    const { listingId, productName, targetQuantity, minPerParticipant, maxPerParticipant, slotDate, pickupNote = '', deliveryInfo = '', pincode } = req.body || {};
+    // Model 2 (farmer offer): bound to one of the farmer's active listings.
+    // Model 1 (community): any authenticated user; product is named, farmer assigned later.
+    let listing = null;
+    if (listingId !== undefined && listingId !== null && listingId !== '') {
+      if (req.user.role !== 'FARMER') return response(res, 403, { code: 'FORBIDDEN', message: 'Only farmers can offer their own listings' });
+      if (!mongoose.isValidObjectId(listingId)) return response(res, 400, { code: 'INVALID_LISTING', message: 'A valid listing is required' });
+      listing = await Listing.findOne({ _id: listingId, farmerId: req.user.id, status: 'ACTIVE' });
+      if (!listing) return response(res, 404, { code: 'LISTING_NOT_FOUND', message: 'Active listing not found' });
+    } else if (req.user.role === 'FARMER' && typeof productName !== 'string') {
+      return response(res, 400, { code: 'INVALID_LISTING', message: 'A valid listing is required' });
+    }
+    const name = listing ? listing.productName : (typeof productName === 'string' ? productName.trim() : '');
+    if (!name || name.length > 120) return response(res, 400, { code: 'INVALID_BULK_GROUP', message: 'A product name of 1-120 characters is required' });
+    const target = Number(targetQuantity);
+    const minShare = minPerParticipant === undefined || minPerParticipant === '' ? (listing ? Number(listing.minOrderQuantity) || 1 : 1) : Number(minPerParticipant);
+    const maxShare = maxPerParticipant == null || maxPerParticipant === '' ? null : Number(maxPerParticipant);
+    if (
+      !Number.isFinite(target) || target <= 0 || target > 100000 ||
+      !Number.isFinite(minShare) || minShare <= 0 ||
+      (maxShare !== null && (!Number.isFinite(maxShare) || maxShare < minShare)) ||
+      (slotDate !== undefined && slotDate !== null && slotDate !== '' && Number.isNaN(Date.parse(slotDate))) ||
+      typeof pickupNote !== 'string' || pickupNote.length > 300 ||
+      typeof deliveryInfo !== 'string' || deliveryInfo.length > 300 ||
+      (pincode !== undefined && (typeof pincode !== 'string' || (pincode && !/^\d{6}$/.test(pincode))))
+    ) {
+      return response(res, 400, { code: 'INVALID_BULK_GROUP', message: 'Target quantity, share limits, and pickup details are invalid' });
+    }
+    let created;
+    for (let attempts = 0; ; attempts++) {
+      try {
+        [created] = await BulkGroup.create([{
+          groupId: `BG-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
+          model: listing ? 'offer' : 'community',
+          farmerId: req.user.id,
+          assignedFarmerId: listing ? req.user.id : null,
+          assignmentHistory: listing ? [{ farmerId: req.user.id, farmerName: req.user.name, action: 'assigned', assignedBy: 'owner' }] : [],
+          listingId: listing ? listing.id : null,
+          productName: name,
+          priceAtOffer: listing ? listing.price : null,
+          priceUnit: listing ? listing.priceUnit : 'kg',
+          imageUrl: listing ? listing.imageUrl : '',
+          targetQuantity: Math.round(target * 100) / 100,
+          minPerParticipant: Math.round(minShare * 100) / 100,
+          maxPerParticipant: maxShare,
+          slotDate: slotDate || null,
+          pickupNote: pickupNote.trim(),
+          deliveryInfo: deliveryInfo.trim(),
+          pincode: pincode || (listing ? listing.pincode : '') || req.user.pincode || '',
+        }]);
+        break;
+      } catch (error) {
+        if (error.code === 11000 && attempts < 2) continue;
+        throw error;
+      }
+    }
+    const full = await created.populate(['farmerId', 'assignedFarmerId']);
+    const data = bulkGroupView(full);
+    io.emit('bulk:updated', { groupId: data.groupId, status: data.status });
+    return response(res, 201, data);
+  } catch (error) { next(error); }
+});
+
+app.get('/api/bulk/groups', async (req, res, next) => {
+  try {
+    const filter = {};
+    const status = String(req.query.status || 'OPEN').toUpperCase();
+    if (['OPEN', 'TARGET_REACHED', 'ASSIGNED', 'FULFILLING', 'COMPLETED', 'CANCELLED', 'AGGREGATED', 'FULFILLED'].includes(status)) filter.status = status;
+    else if (status !== 'ALL') filter.status = 'OPEN';
+    if (req.query.model === 'offer' || req.query.model === 'community') filter.model = req.query.model;
+    if (req.query.pincode) filter.pincode = String(req.query.pincode).slice(0, 6);
+    if (req.query.farmerId && mongoose.isValidObjectId(req.query.farmerId)) filter.farmerId = req.query.farmerId;
+    if (req.query.assignedFarmerId && mongoose.isValidObjectId(req.query.assignedFarmerId)) filter.assignedFarmerId = req.query.assignedFarmerId;
+    const groups = await BulkGroup.find(filter).populate(['farmerId', 'assignedFarmerId']).sort({ createdAt: -1 }).limit(200);
+    return response(res, 200, groups.map(bulkGroupView));
+  } catch (error) { next(error); }
+});
+
+app.get('/api/bulk/groups/:id', async (req, res, next) => {
+  try {
+    const query = mongoose.isValidObjectId(req.params.id) ? { _id: req.params.id } : { groupId: req.params.id };
+    const group = await BulkGroup.findOne(query).populate(['farmerId', 'assignedFarmerId']);
+    if (!group) return response(res, 404, { code: 'GROUP_NOT_FOUND', message: 'Bulk group not found' });
+    return response(res, 200, bulkGroupView(group));
+  } catch (error) { next(error); }
+});
+
+app.post('/api/bulk/groups/:id/join', authenticate, requireRole('CONSUMER'), async (req, res, next) => {
+  try {
+    const rawQty = Number(req.body?.quantity);
+    if (!Number.isFinite(rawQty) || rawQty <= 0) return response(res, 400, { code: 'INVALID_QUANTITY', message: 'Quantity must be greater than zero' });
+    const quantity = Math.round(rawQty * 100) / 100;
+    const query = mongoose.isValidObjectId(req.params.id) ? { _id: req.params.id } : { groupId: req.params.id };
+    const candidate = await BulkGroup.findOne(query);
+    if (!candidate) return response(res, 404, { code: 'GROUP_NOT_FOUND', message: 'Bulk group not found' });
+    if (quantity < candidate.minPerParticipant || (candidate.maxPerParticipant != null && quantity > candidate.maxPerParticipant)) {
+      return response(res, 400, { code: 'INVALID_SHARE', message: 'Quantity is outside this group’s per-person limits' });
+    }
+    const address = typeof req.body?.address === 'string' ? req.body.address.trim() : '';
+    const participantPincode = typeof req.body?.pincode === 'string' ? req.body.pincode.trim() : '';
+    if (!address || address.length > 300 || !/^\d{6}$/.test(participantPincode)) {
+      return response(res, 400, { code: 'INVALID_DELIVERY_ADDRESS', message: 'A delivery address and 6-digit pincode are required to join' });
+    }
+    const updated = await BulkGroup.findOneAndUpdate(
+      { ...query, status: 'OPEN', 'participants.consumerId': { $ne: req.user.id }, collectedQuantity: { $lte: candidate.targetQuantity - quantity } },
+      { $inc: { collectedQuantity: quantity }, $push: { participants: { consumerId: req.user.id, consumerName: req.user.name, quantity, address, pincode: participantPincode, joinedAt: new Date() } } },
+      { new: true },
+    ).populate(['farmerId', 'assignedFarmerId']);
+    if (!updated) {
+      const current = await BulkGroup.findOne(query);
+      if (!current) return response(res, 404, { code: 'GROUP_NOT_FOUND', message: 'Bulk group not found' });
+      if (current.status !== 'OPEN') return response(res, 409, { code: 'GROUP_CLOSED', message: 'This group is no longer open' });
+      if (current.participants.some((p) => String(p.consumerId) === req.user.id)) return response(res, 409, { code: 'ALREADY_JOINED', message: 'You already joined this group' });
+      return response(res, 409, { code: 'GROUP_FULL', message: 'Not enough remaining quantity in this group' });
+    }
+    let data = bulkGroupView(updated);
+    if (updated.collectedQuantity >= updated.targetQuantity - 1e-9) {
+      const nextStatus = updated.assignedFarmerId ? 'ASSIGNED' : 'TARGET_REACHED';
+      const aggregated = await BulkGroup.findOneAndUpdate({ _id: updated.id, status: 'OPEN' }, { status: nextStatus }, { new: true }).populate(['farmerId', 'assignedFarmerId']);
+      if (aggregated) {
+        data = bulkGroupView(aggregated);
+        const notifyId = String(aggregated.assignedFarmerId?._id || aggregated.assignedFarmerId || aggregated.farmerId?._id || aggregated.farmerId);
+        await Notification.create({ userId: notifyId, kind: 'bulk:aggregated', message: `Group ${aggregated.groupId} reached its target`, data: { groupId: aggregated.groupId } });
+        io.to(`user:${notifyId}`).emit('notification:new', { kind: 'bulk:aggregated', groupId: aggregated.groupId });
+      }
+    }
+    io.emit('bulk:updated', { groupId: data.groupId, status: data.status });
+    return response(res, 200, data);
+  } catch (error) { next(error); }
+});
+
+app.post('/api/bulk/groups/:id/leave', authenticate, requireRole('CONSUMER'), async (req, res, next) => {
+  const session = await mongoose.startSession();
+  try {
+    const query = mongoose.isValidObjectId(req.params.id) ? { _id: req.params.id } : { groupId: req.params.id };
+    let data;
+    await session.withTransaction(async () => {
+      const group = await BulkGroup.findOne(query).session(session);
+      if (!group) throw Object.assign(new Error('Bulk group not found'), { status: 404, code: 'GROUP_NOT_FOUND' });
+      if (group.status !== 'OPEN') throw Object.assign(new Error('Only open groups can be left'), { status: 409, code: 'GROUP_CLOSED' });
+      const index = group.participants.findIndex((p) => String(p.consumerId) === req.user.id);
+      if (index === -1) throw Object.assign(new Error('You are not in this group'), { status: 404, code: 'NOT_PARTICIPANT' });
+      const [removed] = group.participants.splice(index, 1);
+      group.collectedQuantity = Math.max(0, Math.round((group.collectedQuantity - removed.quantity) * 100) / 100);
+      await group.save({ session });
+      await group.populate('farmerId');
+      data = bulkGroupView(group);
+    });
+    io.emit('bulk:updated', { groupId: data.groupId, status: data.status });
+    return response(res, 200, data);
+  } catch (error) {
+    if (['GROUP_NOT_FOUND', 'GROUP_CLOSED', 'NOT_PARTICIPANT'].includes(error.code)) return response(res, error.status, { code: error.code, message: error.message });
+    next(error);
+  } finally { await session.endSession(); }
+});
+
+app.post('/api/bulk/groups/:id/cancel', authenticate, async (req, res, next) => {
+  try {
+    const query = mongoose.isValidObjectId(req.params.id) ? { _id: req.params.id } : { groupId: req.params.id };
+    const existing = await BulkGroup.findOne(query);
+    if (!existing) return response(res, 404, { code: 'GROUP_NOT_FOUND', message: 'Bulk group not found' });
+    const isManager = String(existing.farmerId) === req.user.id || String(existing.assignedFarmerId || '') === req.user.id;
+    if (!isManager) return response(res, 403, { code: 'FORBIDDEN', message: 'Only the group creator or assigned farmer can cancel it' });
+    if (!['OPEN', 'TARGET_REACHED', 'ASSIGNED', 'AGGREGATED'].includes(existing.status)) {
+      return response(res, 409, { code: 'GROUP_NOT_CANCELLABLE', message: 'Only open or assigned groups can be cancelled' });
+    }
+    const group = await BulkGroup.findOneAndUpdate({ _id: existing.id }, { status: 'CANCELLED' }, { new: true }).populate(['farmerId', 'assignedFarmerId']);
+    if (group.participants.length) {
+      await Notification.insertMany(group.participants.map((p) => ({ userId: p.consumerId, kind: 'bulk:cancelled', message: `Group ${group.groupId} was cancelled`, data: { groupId: group.groupId } })));
+      for (const p of group.participants) io.to(`user:${p.consumerId}`).emit('notification:new', { kind: 'bulk:cancelled', groupId: group.groupId });
+    }
+    const data = bulkGroupView(group);
+    io.emit('bulk:updated', { groupId: data.groupId, status: data.status });
+    return response(res, 200, data);
+  } catch (error) { next(error); }
+});
+
+app.post('/api/bulk/groups/:id/assign', authenticate, requireRole('FARMER'), async (req, res, next) => {
+  try {
+    const query = mongoose.isValidObjectId(req.params.id) ? { _id: req.params.id } : { groupId: req.params.id };
+    const group = await BulkGroup.findOne(query);
+    if (!group) return response(res, 404, { code: 'GROUP_NOT_FOUND', message: 'Bulk group not found' });
+    if (group.assignedFarmerId) return response(res, 409, { code: 'ALREADY_ASSIGNED', message: 'This group already has a farmer' });
+    if (!['OPEN', 'TARGET_REACHED', 'AGGREGATED'].includes(group.status)) {
+      return response(res, 409, { code: 'GROUP_NOT_READY', message: 'Only open or target-reached groups can take a farmer' });
+    }
+    const remaining = group.targetQuantity - group.collectedQuantity;
+    const eligible = await Listing.findOne({
+      farmerId: req.user.id,
+      status: 'ACTIVE',
+      productName: new RegExp(`^${escapeRegex(group.productName)}$`, 'i'),
+      quantity: { $gte: Math.max(0, remaining) },
+    });
+    if (!eligible) return response(res, 409, { code: 'INELIGIBLE_FARMER', message: 'You need an active listing of this product with enough stock' });
+    group.assignedFarmerId = req.user.id;
+    group.assignmentHistory.push({ farmerId: req.user.id, farmerName: req.user.name, action: 'assigned', assignedBy: 'self' });
+    if (['TARGET_REACHED', 'AGGREGATED'].includes(group.status)) group.status = 'ASSIGNED';
+    await group.save();
+    await group.populate(['farmerId', 'assignedFarmerId']);
+    if (String(group.farmerId?._id || group.farmerId) !== req.user.id) {
+      const creatorId = String(group.farmerId?._id || group.farmerId);
+      await Notification.create({ userId: creatorId, kind: 'bulk:assigned', message: `${req.user.name} will supply group ${group.groupId}`, data: { groupId: group.groupId } });
+      io.to(`user:${creatorId}`).emit('notification:new', { kind: 'bulk:assigned', groupId: group.groupId });
+    }
+    const data = bulkGroupView(group);
+    io.emit('bulk:updated', { groupId: data.groupId, status: data.status });
+    return response(res, 200, data);
+  } catch (error) { next(error); }
+});
+
+app.post('/api/bulk/groups/:id/unassign', authenticate, requireRole('FARMER'), async (req, res, next) => {
+  try {
+    const query = mongoose.isValidObjectId(req.params.id) ? { _id: req.params.id } : { groupId: req.params.id };
+    const group = await BulkGroup.findOne(query);
+    if (!group) return response(res, 404, { code: 'GROUP_NOT_FOUND', message: 'Bulk group not found' });
+    if (String(group.assignedFarmerId || '') !== req.user.id) return response(res, 409, { code: 'NOT_ASSIGNED', message: 'You are not assigned to this group' });
+    if (!['ASSIGNED', 'TARGET_REACHED', 'AGGREGATED', 'OPEN'].includes(group.status)) {
+      return response(res, 409, { code: 'GROUP_NOT_READY', message: 'This group can no longer release its farmer' });
+    }
+    group.assignedFarmerId = null;
+    group.assignmentHistory.push({ farmerId: req.user.id, farmerName: req.user.name, action: 'unassigned', assignedBy: 'self' });
+    if (group.status === 'ASSIGNED') group.status = 'TARGET_REACHED';
+    await group.save();
+    await group.populate(['farmerId', 'assignedFarmerId']);
+    const data = bulkGroupView(group);
+    io.emit('bulk:updated', { groupId: data.groupId, status: data.status });
+    return response(res, 200, data);
+  } catch (error) { next(error); }
+});
+
+app.post('/api/bulk/groups/:id/fulfil', authenticate, requireRole('FARMER'), async (req, res, next) => {
+  const session = await mongoose.startSession();
+  try {
+    const query = mongoose.isValidObjectId(req.params.id) ? { _id: req.params.id } : { groupId: req.params.id };
+    let group;
+    let createdOrders = [];
+    let attempts = 0;
+    for (;;) {
+      try {
+        await session.withTransaction(async () => {
+          group = await BulkGroup.findOne(query).session(session);
+          if (!group) throw Object.assign(new Error('Group not found'), { status: 404, code: 'GROUP_NOT_FOUND' });
+          const assigneeId = String(group.assignedFarmerId || '');
+          const isAssignee = assigneeId === req.user.id;
+          const isLegacyOwner = !group.assignedFarmerId && String(group.farmerId) === req.user.id;
+          if (!isAssignee && !isLegacyOwner) throw Object.assign(new Error('Only the assigned farmer can fulfil this group'), { status: 403, code: 'FORBIDDEN' });
+          if (!['ASSIGNED', 'TARGET_REACHED', 'AGGREGATED'].includes(group.status)) throw Object.assign(new Error('Only assigned target-reached groups can be fulfilled'), { status: 409, code: 'GROUP_NOT_READY' });
+          if (!group.participants.length) throw Object.assign(new Error('Group has no participants'), { status: 409, code: 'GROUP_EMPTY' });
+          const supplierId = group.assignedFarmerId || group.farmerId;
+          let listing;
+          if (group.listingId) {
+            listing = await Listing.findOneAndUpdate(
+              { _id: group.listingId, farmerId: supplierId, status: 'ACTIVE', quantity: { $gte: group.collectedQuantity } },
+              { $inc: { quantity: -group.collectedQuantity } },
+              { new: true, session },
+            );
+          } else {
+            const candidates = await Listing.find({
+              farmerId: supplierId,
+              status: 'ACTIVE',
+              productName: new RegExp(`^${escapeRegex(group.productName)}$`, 'i'),
+              quantity: { $gte: group.collectedQuantity },
+            }).sort({ quantity: -1 }).session(session);
+            if (candidates.length) {
+              listing = await Listing.findOneAndUpdate(
+                { _id: candidates[0].id, quantity: { $gte: group.collectedQuantity } },
+                { $inc: { quantity: -group.collectedQuantity } },
+                { new: true, session },
+              );
+            }
+          }
+          if (!listing) throw Object.assign(new Error('Insufficient stock to fulfil this group'), { status: 409, code: 'INSUFFICIENT_STOCK' });
+          const supplier = await User.findById(supplierId).session(session);
+          group.priceAtOffer = group.priceAtOffer ?? listing.price;
+          group.priceUnit = group.priceUnit || listing.priceUnit;
+          createdOrders = [];
+          for (const participant of group.participants) {
+            const share = participant.quantity;
+            if (!participant.address || !/^\d{6}$/.test(participant.pincode || '')) {
+              throw Object.assign(new Error('A participant is missing a delivery address'), { status: 409, code: 'ADDRESS_REQUIRED' });
+            }
+            const subtotal = listing.price * share;
+            const orderId = `FQ-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+            const [created] = await Order.create([{
+              orderId,
+              consumerId: participant.consumerId,
+              consumerName: participant.consumerName,
+              consumerPhone: '',
+              items: [{ listingId: listing.id, farmerId: supplierId, farmerName: supplier?.name || req.user.name, productName: listing.productName, quantity: share, priceAtPurchase: listing.price, subtotal }],
+              subOrders: [{ subOrderId: `${orderId}-A`, farmerId: supplierId, farmerName: supplier?.name || req.user.name, itemIndexes: [0], status: 'ORDER_PLACED' }],
+              subtotal,
+              deliveryFee: 0,
+              discount: 0,
+              communitySavings: 0,
+              total: Math.max(0, subtotal + Number(process.env.DELIVERY_FEE ?? 0)),
+              paymentMethod: 'COD',
+              paymentStatus: 'PENDING',
+              status: 'ORDER_PLACED',
+              fulfillment: 'DELIVERY',
+              address: participant.address,
+              pincode: participant.pincode,
+              expectedAt: group.slotDate || null,
+            }], { session });
+            createdOrders.push(created);
+          }
+          group.status = 'COMPLETED';
+          await group.save({ session });
+          await Notification.insertMany(createdOrders.map((order) => ({ userId: order.consumerId, kind: 'order:created', message: `Bulk group ${group.groupId} order is out for delivery`, data: { orderId: order.orderId, groupId: group.groupId } })), { session });
+        });
+        break;
+      } catch (txError) {
+        if (txError?.code === 11000 && attempts < 2) { attempts += 1; continue; }
+        throw txError;
+      }
+    }
+    for (const order of createdOrders) {
+      io.to(`user:${order.consumerId}`).emit('order:created', order);
+      io.to(`user:${order.consumerId}`).emit('notification:new', { kind: 'order:created', orderId: order.orderId });
+    }
+    io.emit('bulk:updated', { groupId: group.groupId, status: 'COMPLETED' });
+    io.emit('listing:stockUpdated', { listingId: String(group.listingId) });
+    await group.populate(['farmerId', 'assignedFarmerId']);
+    return response(res, 201, { group: bulkGroupView(group), orders: createdOrders.map((o) => o.orderId) });
+  } catch (error) {
+    if (['GROUP_NOT_FOUND', 'GROUP_NOT_READY', 'GROUP_EMPTY', 'INSUFFICIENT_STOCK', 'ADDRESS_REQUIRED', 'FORBIDDEN'].includes(error.code)) return response(res, error.status, { code: error.code, message: error.message });
+    next(error);
+  } finally { await session.endSession(); }
+});
+
+app.get('/api/farmer/forecast', authenticate, requireRole('FARMER'), async (req, res, next) => {
+  try {
+    // Rule-based MVP over the farmer's own sales. Labeled honestly: no ML involved.
+    const windowDays = 30;
+    const since = new Date(Date.now() - windowDays * 86400000);
+    const orders = await Order.find({ 'subOrders.farmerId': req.user.id, createdAt: { $gte: since } });
+    const sales = new Map();
+    for (const order of orders) {
+      const sub = order.subOrders.find((entry) => String(entry.farmerId) === req.user.id);
+      if (!sub || ['FARMER_REJECTED', 'CANCELLED'].includes(sub.status)) continue;
+      for (const index of sub.itemIndexes) {
+        const item = order.items[index];
+        if (!item) continue;
+        const entry = sales.get(item.productName) || { quantity: 0, orders: 0 };
+        entry.quantity += item.quantity;
+        entry.orders += 1;
+        sales.set(item.productName, entry);
+      }
+    }
+    const listings = await Listing.find({ farmerId: req.user.id, status: 'ACTIVE' });
+    const inventory = new Map();
+    for (const listing of listings) inventory.set(listing.productName, (inventory.get(listing.productName) || 0) + listing.quantity);
+    const names = [...new Set([...sales.keys(), ...inventory.keys()])].sort();
+    const products = names.map((productName) => {
+      const sold = sales.get(productName)?.quantity || 0;
+      const orderCount = sales.get(productName)?.orders || 0;
+      const avgWeekly = Math.round((sold / (windowDays / 7)) * 100) / 100;
+      const stock = Math.round((inventory.get(productName) || 0) * 100) / 100;
+      return { productName, soldLast30Days: Math.round(sold * 100) / 100, orderCount, avgWeeklySales: avgWeekly, activeInventory: stock, suggestedRestock: Math.max(0, Math.ceil(avgWeekly * 1.25 - stock)) };
+    });
+    return response(res, 200, {
+      method: 'rule-based-30d',
+      windowDays,
+      generatedAt: new Date().toISOString(),
+      insufficientData: products.every((p) => p.soldLast30Days === 0),
+      products,
+    });
+  } catch (error) { next(error); }
+});
+
+app.post('/api/auth/forgot', limitAuthAttempts, async (req, res, next) => {
+  try {
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    if (!email) return response(res, 400, { code: 'INVALID_EMAIL', message: 'An email address is required' });
+    if (!mailerConfigured()) return response(res, 503, { code: 'EMAIL_DELIVERY_NOT_CONFIGURED', message: 'Password reset is unavailable right now. Please try again later.' });
+    const user = await User.findOne({ email });
+    // Generic response either way so accounts cannot be enumerated.
+    if (!user) return response(res, 200, { sent: true });
+    const token = crypto.randomBytes(32).toString('hex');
+    await PasswordReset.create({ userId: user.id, tokenHash: crypto.createHash('sha256').update(token).digest('hex'), expiresAt: new Date(Date.now() + 60 * 60 * 1000) });
+    const base = (process.env.APP_PUBLIC_URL || '').split(',')[0]?.trim() || 'https://farmiqo-production.up.railway.app';
+    await sendMail({
+      to: user.email,
+      subject: 'Reset your Farmiqo password',
+      html: `<p>Hello ${user.name},</p><p>Use this link within 1 hour to set a new password:</p><p><a href="${base}/#reset=${token}">${base}/#reset=…</a></p><p>If you did not request this, ignore this email.</p>`,
+    });
+    // Test hook only: lets automated tests complete the flow without an inbox.
+    // Double-gated so production can never expose the token.
+    if (process.env.MAILER_PROVIDER === 'test' && process.env.NODE_ENV === 'test') {
+      return response(res, 200, { sent: true, testOnly: { token } });
+    }
+    return response(res, 200, { sent: true });
+  } catch (error) {
+    if (error.code === 'EMAIL_DELIVERY_NOT_CONFIGURED' || error.code === 'EMAIL_DELIVERY_FAILED') return response(res, error.status, { code: error.code, message: error.message });
+    next(error);
+  }
+});
+
+app.post('/api/auth/reset', limitAuthAttempts, async (req, res, next) => {
+  try {
+    const token = typeof req.body?.token === 'string' ? req.body.token : '';
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    if (!token || typeof password !== 'string' || password.length < 8 || Buffer.byteLength(password, 'utf8') > 72) {
+      return response(res, 400, { code: 'INVALID_RESET', message: 'A valid reset token and password (8+ characters) are required' });
+    }
+    const record = await PasswordReset.findOne({ tokenHash: crypto.createHash('sha256').update(token).digest('hex'), usedAt: null, expiresAt: { $gt: new Date() } });
+    if (!record) return response(res, 400, { code: 'INVALID_OR_EXPIRED_TOKEN', message: 'This reset link is invalid or has expired' });
+    record.usedAt = new Date();
+    await record.save();
+    await User.updateOne({ _id: record.userId }, { passwordHash: await bcrypt.hash(password, 12) });
+    return response(res, 200, { reset: true });
+  } catch (error) { next(error); }
+});
+
+app.get('/api/uploads/config', async (req, res, next) => {
+  try {
+    if (!uploadsConfigured()) return response(res, 503, { code: 'UPLOAD_NOT_CONFIGURED', message: 'Image uploads are unavailable right now' });
+    return response(res, 200, { provider: 'cloudinary', cloudName: process.env.CLOUDINARY_CLOUD_NAME });
+  } catch (error) { next(error); }
+});
+
+app.post('/api/uploads/signature', authenticate, requireRole('FARMER'), async (req, res, next) => {
+  try {
+    if (!uploadsConfigured()) return response(res, 503, { code: 'UPLOAD_NOT_CONFIGURED', message: 'Image uploads are unavailable right now' });
+    const timestamp = Math.floor(Date.now() / 1000);
+    const folder = `farmiqo/${req.user.id}`;
+    const signature = crypto.createHash('sha1').update(`folder=${folder}&timestamp=${timestamp}${process.env.CLOUDINARY_API_SECRET}`).digest('hex');
+    return response(res, 200, { provider: 'cloudinary', cloudName: process.env.CLOUDINARY_CLOUD_NAME, apiKey: process.env.CLOUDINARY_API_KEY, timestamp, folder, signature });
+  } catch (error) { next(error); }
+});
+
+app.delete('/api/users/me', authenticate, async (req, res, next) => {
+  const session = await mongoose.startSession();
+  try {
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    if (!password || !(await bcrypt.compare(password, req.user.passwordHash))) {
+      return response(res, 401, { code: 'INVALID_CREDENTIALS', message: 'Password confirmation failed' });
+    }
+    await session.withTransaction(async () => {
+      if (req.user.role === 'FARMER') {
+        await Listing.updateMany({ farmerId: req.user.id, status: { $ne: 'DELETED' } }, { status: 'DELETED' }, { session });
+        await BulkGroup.updateMany({ farmerId: req.user.id, status: { $in: ['OPEN', 'TARGET_REACHED', 'ASSIGNED', 'AGGREGATED'] } }, { status: 'CANCELLED' }, { session });
+      } else {
+        const openGroups = await BulkGroup.find({ status: 'OPEN', 'participants.consumerId': req.user.id }).session(session);
+        for (const group of openGroups) {
+          const entry = group.participants.find((p) => String(p.consumerId) === req.user.id);
+          group.participants = group.participants.filter((p) => String(p.consumerId) !== req.user.id);
+          group.collectedQuantity = Math.max(0, Math.round((group.collectedQuantity - (entry?.quantity || 0)) * 100) / 100);
+          await group.save({ session });
+        }
+        await Cart.deleteOne({ consumerId: req.user.id }, { session });
+      }
+      await Notification.deleteMany({ userId: req.user.id }, { session });
+      await PasswordReset.deleteMany({ userId: req.user.id }, { session });
+      await User.deleteOne({ _id: req.user.id }, { session });
+    });
+    return response(res, 200, { deleted: true });
+  } catch (error) { next(error); }
+  finally { await session.endSession(); }
 });
 
 app.use('/api', (_req, res) => response(res, 404, { code: 'NOT_FOUND', message: 'API route not found' }));

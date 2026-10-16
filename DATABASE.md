@@ -23,6 +23,7 @@ The API returns HTTP 503 on data routes until Atlas connects (`GET /api/health` 
 `minOrderQuantity` (default 1), `maxOrderQuantity` (nullable), `harvestedAt*`,
 `availableFrom/Until`, `location`, `pincode` (indexed), `farmingMethod`, `chemicalUsage`,
 `grade`, `imageUrl` (local `/assets/` path or `https:` only — enforced server-side),
+`imageSource` (`''|photo|url|ai|asset` — labels farmer photos vs illustrations),
 `deliveryAvailable/pickupAvailable`, `status` (`ACTIVE|PAUSED|DELETED`, indexed), timestamps.
 Soft delete: `DELETE /api/listings/:id` sets `DELETED`; public queries only return `ACTIVE` + `quantity > 0`.
 
@@ -46,10 +47,20 @@ Reject/cancel restores stock atomically; COD totals reconcile to collected sub-o
 Bulk groups need: `BulkGroup` (name, product, targetQty, minQty, slotDate, pincode,
 `status: OPEN|AGGREGATED|CLOSED|FULFILLED`, createdBy) + `BulkMembership`
 (groupId, consumerId, quantity, status, timestamps) with a unique (groupId, consumerId)
-index, plus pooled-checkout integration into `Order`. Demand forecast needs an
-aggregates job, not a new primary collection. Password recovery needs either an
-email/SMS provider or an explicit owner-approved alternative — **no reset flow ships
-until delivery of reset secrets is solved** (see `RELEASE_CHECKLIST.md`).
+index (`groupId` unique, `farmerId`/`assignedFarmerId`/`listingId`/`pincode`/`status`/`model`).
+Two models: `offer` (farmer-bound listing, owner auto-assigned) and `community` (any
+authenticated user names a product; no listing required). `assignedFarmerId` +
+`assignmentHistory[]` record who supplies the group; `deliveryInfo` plus per-participant
+`address`/`pincode` (required at join) capture the delivery arrangement. Lifecycle:
+`OPEN → TARGET_REACHED → ASSIGNED → COMPLETED` plus `CANCELLED`
+(legacy `AGGREGATED`/`FULFILLED` rows still read correctly).
+Fulfil runs in one transaction: conditional stock decrement (offer listing, else the
+assigned farmer's best-stocked matching listing) plus one COD `DELIVERY` `Order` per
+participant using the join-time address (missing address aborts with `ADDRESS_REQUIRED`),
+then `COMPLETED`. Demand forecast is computed on read from `Order`/`Listing` (no new
+collection). Password recovery uses `PasswordReset` (`userId` indexed, `tokenHash`
+unique, TTL expiry on `expiresAt`) holding only SHA-256 hashes — delivery via Brevo
+HTTPS API (see `DEPLOYMENT.md` for keys).
 
 ## Migrations & backups
 

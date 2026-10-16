@@ -47,6 +47,33 @@ Current state: the JWT and user profile live in WebView `localStorage`
   Capacitor secure-storage plugin, shorten JWT lifetime with a refresh-token rotation,
   and add a server-side token denylist for logout/account-deletion.
 
+## New flows in this release
+
+- **Password reset:** reset tokens never stored raw (SHA-256 hash only), 1-hour TTL expiry with
+  automatic cleanup, single-use, rate-limited like login, generic responses (no account
+  enumeration). Delivery only via Brevo HTTPS API — Railway's free tier blocks outbound SMTP,
+  so SMTP was deliberately not used. Test-only token exposure is double-gated
+  (`MAILER_PROVIDER=test` **and** `NODE_ENV=test`) and impossible in production.
+- **Uploads:** the server never accepts file bytes. It mints time-bound Cloudinary signatures
+  scoped to `farmiqo/<farmerId>` folders for farmer sessions only; delivery URLs still pass
+  the existing `https:` allowlist when saved on listings. Client validates JPEG/PNG/WebP ≤ 5 MB.
+- **Account deletion:** password re-verification required; runs in one transaction (listings
+  withdrawn, open bulk participations unwound, carts/notifications/reset rows removed, past
+  orders preserved as financial records).
+
+## CRITICAL: Atlas `0.0.0.0/0` migration plan (temporary test entry)
+
+Verified against official Railway docs: **static outbound IPs are a Pro-plan (paid) feature**,
+and Railway free-tier outbound SMTP is disabled (hence the HTTPS mail API above). Options:
+
+| Option | Cost | Effect |
+|---|---|---|
+| A. Keep `0.0.0.0/0` + compensating controls | Free | Works today: least-privilege DB user (readWrite on the Farmiqo DB only, no admin roles), strong unique password, TLS enforced by Atlas, no sensitive data in logs |
+| B. Upgrade to Railway Pro + enable static outbound IPs, then narrow the Atlas allowlist to those exact IPs | Paid (needs approval) | Removes open access; redeploy after toggling |
+
+**Do not narrow or remove the entry until option B is active and verified, or the live app
+disconnects.** Exact owner action for B: Railway dashboard → service **Settings → Networking → enable Static Outbound IPs** → redeploy → copy the shown IPs → Atlas **Network Access** → replace `0.0.0.0/0` with those IPs → confirm `/api/health` still 200. Recommended posture until then: option A (already the case — the app user must not hold Atlas admin).
+
 ## Secret rules (never violated)
 
 `.env` untracked; `.env.example` holds placeholders only; JWT/Mongo URIs only in host secret managers or local `.env`; signing keys only in `%USERPROFILE%\.farmiqo` / GitHub Secrets; never print, commit, or paste credentials.

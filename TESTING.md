@@ -4,7 +4,7 @@
 
 ```bash
 npm run check    # node --check ×6 (app, server, api, icons, en, te) + vite build
-npm test         # 11 integration tests: real backend + in-memory replica set
+npm test         # 33 tests: 30 API integration + 3 i18n integrity (real backend + in-memory replica set)
 npm audit --omit=dev   # 0 vulnerabilities
 ```
 
@@ -14,15 +14,27 @@ and asserts over HTTP: liveness/readiness probes, registration validation + dupl
 409, login 401/200, session gating, farmer-only listing creation (consumer 403, invalid 400),
 public marketplace visibility, cart stock 409 then success, COD checkout (total snapshot,
 cart cleared, history), the full farmer chain `ORDER_PLACED → … → COMPLETED` with COD `PAID`,
-invalid-transition 409, stock restoration on reject, malformed-id 404, unknown-route 404.
-CI (`.github/workflows/deploy-backend.yml`) runs `npm run check` + `npm test` before any deploy.
+invalid-transition 409, stock restoration on reject, malformed-id 404, unknown-route 404,
+plus bulk groups (create/validation, join limits, duplicate-join 409, aggregation on target,
+leave, cancel, fulfil-to-delivery-orders with stock decrement, insufficient-stock 409,
+discovery), rule-based forecast (method label, sales math, sparse-data honesty, farmer-only),
+password reset (validation, single-use token, weak-password 400, login with new password),
+uploads 503-when-unconfigured (farmer) + consumer 403, profile update (validation,
+role/email immutability), and account deletion (password gate,
+login refused after, listings withdrawn). Bulk extras: community creation by consumer
+and farmer, assignment eligibility/duplicate/non-farmer/closed guards, unassign,
+mandatory join address validation and per-participant `DELIVERY` fulfil orders,
+premature/unauthorized fulfil guards, creator-cancel by a consumer, concurrent joins
+capped at target with no duplicates, image URL/source validation, farmer profile edit.
+`tests/i18n.mjs` asserts en/te key parity, no duplicate keys, non-empty strings, and
+no mixed Indic scripts in Telugu values.
 
 - `vite build`: 1916 modules, ~142 KB JS (~41 KB gzip) + 17 KB CSS — passes.
 - Backend boot smoke test (isolated port, throwaway `JWT_SECRET`, no DB): process prints
   `Farmiqo API listening`, `GET /api/health` → **503 disconnected**, `GET /api/listings` →
   **503** via the DB gate. Correct degraded behavior (UI loads, data routes refuse).
-- i18n integrity: 242 keys in each locale, zero duplicate literals, identical key sets,
-  zero non-Telugu Indic codepoints in `te.js`, both modules import cleanly.
+- i18n integrity (`tests/i18n.mjs`): identical key sets in each locale, zero duplicate
+  literals, non-empty strings, zero non-Telugu Indic codepoints in `te.js`, both modules import cleanly.
 - Production-localhost audit (`localhost|127.*|192.168.*|10.*`): every hit is dev-only
   (Vite proxy, CORS dev origins, README dev steps) or a scheme identifier
   (`capacitor://localhost`); native production path enforces `https:`.
@@ -42,16 +54,26 @@ re-subscription, EN/TE runtime substitution, placeholder screens for bulk/foreca
 - [ ] Real APK install + API communication; iOS Simulator artifact; signed AAB/IPA.
 - [ ] Telugu rendering/overflow across small/medium/large screens; accessibility pass.
 - [ ] Cold-start behavior and sleep policy of the chosen free host.
-- [ ] Bulk groups, forecasting, password recovery — **not implemented** (see gaps below).
+- [ ] Production cross-account walkthrough on live data (register → list → order → fulfil with
+  two real devices; local suite covers the same flow against an isolated database).
 
-## Feature gaps vs. the full mobile brief (deferred, not faked)
+## Feature gaps closed in this release (all covered by the 33-test suite)
 
-1. **Bulk groups** (create/join/pooled checkout) — design in `DATABASE.md`; shipping untested
-   order-money logic without a live DB was judged riskier than honest placeholders.
-2. **Demand forecast** — no forecasting service; placeholder stays until a real data source exists.
-3. **Forgot password** — needs an owner-approved delivery channel (email/SMS provider).
-4. **Image uploads** — listings accept `https:` URLs or bundled assets; no cloud object storage
-   is configured (all free object stores need accounts/keys).
+1. **Bulk groups** — real `BulkGroup` model (farmer offers + community groups with farmer
+   assignment) + atomic join/leave/cancel/fulfil; fulfil mints one COD `DELIVERY` order
+   per participant. No frontend dummy data remains.
+2. **Demand forecast** — rule-based MVP over the farmer's own 30-day sales, explicitly
+   labeled `rule-based-30d` (no ML claims); honest insufficient-data state.
+3. **Forgot password** — token-hash + 1-hour expiry + single-use flow, Brevo HTTPS API
+   delivery (Railway free tier blocks SMTP); returns 503 until the owner configures keys.
+4. **Image uploads** — Cloudinary signed-upload flow (free tier, no card); UI degrades to
+   `https:` URL paste until the owner configures credentials.
+
+## Remaining external dependencies (owner actions, not code gaps)
+
+- Brevo account + sender verification (`BREVO_API_KEY`, `RESET_FROM_EMAIL`) for reset mail.
+- Cloudinary account (`CLOUDINARY_*`) for direct photo uploads.
+- Real payment gateway account for non-mock UPI (COD fully works; mock UPI stays labeled).
 
 ## Regression policy
 

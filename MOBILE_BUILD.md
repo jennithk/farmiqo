@@ -45,6 +45,9 @@ CI enforces this (`FARMIQO_API_ORIGIN` repo variable must be `https:`). Never ba
 
 ## GitHub secrets/variables checklist
 
-Variable: `FARMIQO_API_ORIGIN` (public HTTPS API origin). Secrets (signed releases only):
+Variable: `FARMIQO_API_ORIGIN` — set to exactly `https://farmiqo-production.up.railway.app`
+(page: repo **Settings → Secrets and variables → Actions → Variables**). Both mobile workflows
+bake `<origin>/api` into the app and refuse non-`https:` values, so the APK/AAB/IPA talk to
+production with the laptop off. Secrets (signed releases only):
 `ANDROID_KEYSTORE_BASE64/_PASSWORD/_ALIAS/_KEY_PASSWORD`, `IOS_DISTRIBUTION_P12_BASE64/_PASSWORD`,
 `IOS_PROVISIONING_PROFILE_BASE64`, `IOS_KEYCHAIN_PASSWORD`. Never echo or commit these.
