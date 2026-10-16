@@ -36,7 +36,7 @@ Cart writes re-validate live stock and per-listing min/max on every add/update.
 `consumerId` (indexed), denormalized `consumerName/Phone`, `items[]` with snapshotted
 `priceAtPurchase` + `subtotal`, `subOrders[]` per farmer (`subOrderId`, `farmerId`,
 `itemIndexes[]`, `status`), `subtotal/deliveryFee/discount/communitySavings/total`,
-`paymentMethod` (`COD|UPI_MOCK`), `paymentStatus` (`PENDING|PARTIALLY_PAID|PAID`),
+`paymentMethod` (`COD` for all new orders; legacy `UPI_MOCK` rows kept readable), `paymentStatus` (`PENDING|PARTIALLY_PAID|PAID`),
 COD collection metadata, `status`, `fulfillment` (`DELIVERY|PICKUP`), `address/pincode`,
 `addressLabel`, `deliveryLat/deliveryLng` (snapshot from the chosen saved address;
 `null` for legacy manual addresses), `expectedAt`, timestamps.

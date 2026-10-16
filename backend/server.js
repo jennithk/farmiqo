@@ -733,7 +733,7 @@ app.post('/api/orders', authenticate, requireRole('CONSUMER'), async (req, res, 
   const session = await mongoose.startSession();
   try {
     const requestedItems = req.body?.items;
-    const paymentMethod = req.body?.paymentMethod;
+    const paymentMethod = req.body?.paymentMethod || 'COD';
     const fulfillment = req.body?.fulfillment || 'DELIVERY';
     let address = typeof req.body?.address === 'string' ? req.body.address.trim() : '';
     let pincode = typeof req.body?.pincode === 'string' ? req.body.pincode.trim() : req.user.pincode;
@@ -753,8 +753,8 @@ app.post('/api/orders', authenticate, requireRole('CONSUMER'), async (req, res, 
     if (requestedItems !== undefined && (!Array.isArray(requestedItems) || requestedItems.length > 100)) {
       return response(res, 400, { code: 'INVALID_ORDER_ITEMS', message: 'Order items must be a list of at most 100 entries' });
     }
-    if (!['COD', 'UPI_MOCK'].includes(paymentMethod)) {
-      return response(res, 400, { code: 'INVALID_PAYMENT_METHOD', message: 'Choose COD or the simulated UPI option' });
+    if (paymentMethod !== 'COD') {
+      return response(res, 400, { code: 'INVALID_PAYMENT_METHOD', message: 'Cash on Delivery is the only supported payment method' });
     }
     if (fulfillment !== 'DELIVERY') {
       return response(res, 400, { code: 'INVALID_FULFILLMENT', message: 'Orders are delivery only' });

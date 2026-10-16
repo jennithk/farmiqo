@@ -4,7 +4,7 @@
 
 ```bash
 npm run check    # node --check ×6 (app, server, api, icons, en, te) + vite build
-npm test         # 46 tests: 40 API integration + 3 i18n integrity + 3 frontend-wiring regression (real backend + in-memory replica set)
+npm test         # 48 tests: 42 API integration + 3 i18n integrity + 3 frontend-wiring regression (real backend + in-memory replica set)
 npm audit --omit=dev   # 0 vulnerabilities
 ```
 
@@ -32,6 +32,7 @@ Address tests: CRUD validation, 10-address cap, cross-user isolation (404s), ord
 snapshot from `addressId` (coords+label), foreign/malformed id rejection, legacy
 address path, farmer-visible coords with stranger 403s, no coordinate leaks in listings,
 farmer-only farm coordinates, public `/api/config`.
+Payment tests: `UPI_MOCK`/unknown methods rejected with `INVALID_PAYMENT_METHOD`, missing method defaults to COD, confirmation payload completeness (order code, items, subtotal, fee, total, address, dates, COD status).
 `tests/i18n.mjs` asserts en/te key parity, no duplicate keys, non-empty strings, and
 no mixed Indic scripts in Telugu values.
 

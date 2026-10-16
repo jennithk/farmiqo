@@ -208,7 +208,7 @@ test('invalid transition rejected; stock restored on reject', async () => {
   await api('POST', '/api/cart/items', { token: consumer.token, body: { listingId, quantity: 3 } });
   const order = await api('POST', '/api/orders', {
     token: consumer.token,
-    body: { paymentMethod: 'UPI_MOCK', fulfillment: 'DELIVERY', address: '12 Test Street', pincode: '520008' },
+    body: { paymentMethod: 'COD', fulfillment: 'DELIVERY', address: '12 Test Street', pincode: '520008' },
   });
   assert.equal(order.status, 201);
   const orderId = order.data.data.orderId;
@@ -782,4 +782,53 @@ test('bulk fulfil carries snapshot coordinates and farmer sees them', async () =
   assert.ok(pubFull.participants.every((p) => p.address === undefined && p.lat === undefined));
   const denied = await api('GET', '/api/farmer/bulk/groups', { token: consumer.token });
   assert.equal(denied.status, 403);
+});
+
+test('payment is COD-only: UPI and others rejected, default is COD', async () => {
+  const made = await api('POST', '/api/listings', {
+    token: farmer.token,
+    body: { productName: 'COD Only Veg', price: 120, quantity: 50, harvestedAt: new Date().toISOString(), pincode: '520008' },
+  });
+  assert.equal(made.status, 201);
+  const lid = made.data?.data?.id;
+  const base = { items: [{ listingId: lid, quantity: 1 }], fulfillment: 'DELIVERY', address: '12 Test Street', pincode: '520008' };
+  const upi = await api('POST', '/api/orders', { token: consumer.token, body: { ...base, paymentMethod: 'UPI_MOCK' } });
+  assert.equal(upi.status, 400);
+  assert.equal(upi.data?.data?.code, 'INVALID_PAYMENT_METHOD');
+  const card = await api('POST', '/api/orders', { token: consumer.token, body: { ...base, paymentMethod: 'CARD' } });
+  assert.equal(card.status, 400);
+  assert.equal(card.data?.data?.code, 'INVALID_PAYMENT_METHOD');
+  const def = await api('POST', '/api/orders', { token: consumer.token, body: { ...base } });
+  assert.equal(def.status, 201);
+  assert.equal(def.data?.data?.paymentMethod, 'COD');
+  assert.equal(def.data?.data?.deliveryFee, 6);
+  assert.equal(def.data?.data?.total, 126);
+});
+
+test('order response carries the full confirmation payload', async () => {
+  const made = await api('POST', '/api/listings', {
+    token: farmer.token,
+    body: { productName: 'Confirm Veg', price: 60, quantity: 30, harvestedAt: new Date().toISOString(), pincode: '520008' },
+  });
+  const lid = made.data?.data?.id;
+  const order = await api('POST', '/api/orders', {
+    token: consumer.token,
+    body: { items: [{ listingId: lid, quantity: 2 }], paymentMethod: 'COD', fulfillment: 'DELIVERY', addressId: consumer.addressId },
+  });
+  assert.equal(order.status, 201);
+  const o = order.data?.data;
+  assert.ok(typeof o.orderId === 'string' && o.orderId.length > 0);
+  assert.equal(o.items.length, 1);
+  assert.equal(o.items[0].productName, 'Confirm Veg');
+  assert.equal(o.items[0].quantity, 2);
+  assert.ok(typeof o.items[0].listingId === 'string');
+  assert.ok(typeof o.items[0].farmerName === 'string');
+  assert.equal(o.subtotal, 120);
+  assert.equal(o.deliveryFee, 6);
+  assert.equal(o.total, 126);
+  assert.equal(o.paymentMethod, 'COD');
+  assert.equal(o.paymentStatus, 'PENDING');
+  assert.equal(o.status, 'ORDER_PLACED');
+  assert.ok(o.address && o.address.length > 0);
+  assert.ok(o.createdAt);
 });
