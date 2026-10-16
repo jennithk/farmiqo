@@ -4,7 +4,7 @@
 
 ```bash
 npm run check    # node --check ×6 (app, server, api, icons, en, te) + vite build
-npm test         # 43 tests: 40 API integration + 3 i18n integrity (real backend + in-memory replica set)
+npm test         # 46 tests: 40 API integration + 3 i18n integrity + 3 frontend-wiring regression (real backend + in-memory replica set)
 npm audit --omit=dev   # 0 vulnerabilities
 ```
 
