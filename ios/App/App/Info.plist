@@ -45,5 +45,11 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Farmiqo uses your location to place the delivery pin on the map. You can also search or move the pin manually.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Farmiqo uses the camera so farmers can photograph their produce for listings.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Farmiqo accesses photos so farmers can upload produce pictures from the gallery.</string>
 </dict>
 </plist>
