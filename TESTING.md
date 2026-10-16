@@ -4,7 +4,7 @@
 
 ```bash
 npm run check    # node --check ×6 (app, server, api, icons, en, te) + vite build
-npm test         # 33 tests: 30 API integration + 3 i18n integrity (real backend + in-memory replica set)
+npm test         # 43 tests: 40 API integration + 3 i18n integrity (real backend + in-memory replica set)
 npm audit --omit=dev   # 0 vulnerabilities
 ```
 
@@ -23,9 +23,15 @@ uploads 503-when-unconfigured (farmer) + consumer 403, profile update (validatio
 role/email immutability), and account deletion (password gate,
 login refused after, listings withdrawn). Bulk extras: community creation by consumer
 and farmer, assignment eligibility/duplicate/non-farmer/closed guards, unassign,
-mandatory join address validation and per-participant `DELIVERY` fulfil orders,
+mandatory join address validation, saved-address joins with coordinate snapshots (foreign/malformed ids rejected), farmer-only participant address view (public view hides them), per-participant `DELIVERY` fulfil orders,
 premature/unauthorized fulfil guards, creator-cancel by a consumer, concurrent joins
 capped at target with no duplicates, image URL/source validation, farmer profile edit.
+Fee tests: 5% table (100→5 … 2000→100), paise rounding (33.33→1.67), tamper-proofing
+(extra `deliveryFee`/`total`/`discount` ignored), `PICKUP` creation rejected, bulk-fulfil fee.
+Address tests: CRUD validation, 10-address cap, cross-user isolation (404s), order
+snapshot from `addressId` (coords+label), foreign/malformed id rejection, legacy
+address path, farmer-visible coords with stranger 403s, no coordinate leaks in listings,
+farmer-only farm coordinates, public `/api/config`.
 `tests/i18n.mjs` asserts en/te key parity, no duplicate keys, non-empty strings, and
 no mixed Indic scripts in Telugu values.
 
@@ -57,7 +63,7 @@ re-subscription, EN/TE runtime substitution, placeholder screens for bulk/foreca
 - [ ] Production cross-account walkthrough on live data (register → list → order → fulfil with
   two real devices; local suite covers the same flow against an isolated database).
 
-## Feature gaps closed in this release (all covered by the 33-test suite)
+## Feature gaps closed in this release (all covered by the 41-test suite)
 
 1. **Bulk groups** — real `BulkGroup` model (farmer offers + community groups with farmer
    assignment) + atomic join/leave/cancel/fulfil; fulfil mints one COD `DELIVERY` order

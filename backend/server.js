@@ -41,6 +41,9 @@ const userSchema = new mongoose.Schema({
   farmName: { type: String, default: '' },
   location: { type: String, default: '' },
   pincode: { type: String, default: '' },
+  farmLat: { type: Number, default: null },
+  farmLng: { type: Number, default: null },
+  farmAddress: { type: String, default: '' },
   rating: { type: Number, default: 5 },
   completedOrders: { type: Number, default: 0 },
   verified: { type: Boolean, default: false },
@@ -74,6 +77,20 @@ const listingSchema = new mongoose.Schema({
 const cartSchema = new mongoose.Schema({
   consumerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', unique: true, index: true },
   items: [{ listingId: { type: mongoose.Schema.Types.ObjectId, ref: 'Listing' }, quantity: { type: Number, min: 0.01 } }],
+}, { timestamps: true });
+
+const addressSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  label: { type: String, enum: ['Home', 'College', 'Other'], default: 'Home' },
+  house: { type: String, default: '' },
+  street: { type: String, default: '' },
+  area: { type: String, default: '' },
+  landmark: { type: String, default: '' },
+  pincode: { type: String, required: true },
+  phone: { type: String, default: '' },
+  lat: { type: Number, required: true, min: -90, max: 90 },
+  lng: { type: Number, required: true, min: -180, max: 180 },
+  formattedAddress: { type: String, default: '' },
 }, { timestamps: true });
 
 const orderSchema = new mongoose.Schema({
@@ -111,6 +128,9 @@ const orderSchema = new mongoose.Schema({
   fulfillment: { type: String, enum: ['DELIVERY', 'PICKUP'], default: 'DELIVERY' },
   address: String,
   pincode: String,
+  addressLabel: { type: String, default: '' },
+  deliveryLat: { type: Number, default: null },
+  deliveryLng: { type: Number, default: null },
   expectedAt: Date,
 }, { timestamps: true });
 
@@ -153,6 +173,8 @@ const bulkGroupSchema = new mongoose.Schema({
     quantity: Number,
     address: { type: String, default: '' },
     pincode: { type: String, default: '' },
+    lat: { type: Number, default: null },
+    lng: { type: Number, default: null },
     joinedAt: { type: Date, default: Date.now },
   }],
   collectedQuantity: { type: Number, default: 0 },
@@ -171,6 +193,7 @@ const Listing = mongoose.model('Listing', listingSchema);
 const Cart = mongoose.model('Cart', cartSchema);
 const Order = mongoose.model('Order', orderSchema);
 const Notification = mongoose.model('Notification', notificationSchema);
+const Address = mongoose.model('Address', addressSchema);
 const BulkGroup = mongoose.model('BulkGroup', bulkGroupSchema);
 const PasswordReset = mongoose.model('PasswordReset', resetSchema);
 
@@ -225,7 +248,7 @@ app.use((req, res, next) => {
 app.use(express.static(webRoot, { index: false, maxAge: process.env.NODE_ENV === 'production' ? '1h' : 0 }));
 
 const response = (res, status, data) => res.status(status).json({ ok: status < 400, data });
-const safeUser = (user) => ({ id: user.id, name: user.name, email: user.email, phone: user.phone, role: user.role, farmName: user.farmName, location: user.location, pincode: user.pincode });
+const safeUser = (user) => ({ id: user.id, name: user.name, email: user.email, phone: user.phone, role: user.role, farmName: user.farmName, location: user.location, pincode: user.pincode, farmLat: user.farmLat ?? null, farmLng: user.farmLng ?? null, farmAddress: user.farmAddress || '' });
 const signToken = (user) => jwt.sign({ sub: user.id, role: user.role }, jwtSecret, { expiresIn: '7d' });
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const isSafeImageUrl = (value) => {
@@ -305,6 +328,23 @@ function bulkGroupView(group) {
   };
 }
 
+// Full participant delivery details — only ever served to the group's creator
+// or assigned farmer via the farmer endpoint below. Public group views omit them.
+function bulkGroupFarmerView(group) {
+  const base = bulkGroupView(group);
+  base.participants = (group.participants || []).map((p) => ({
+    consumerId: String(p.consumerId),
+    consumerName: p.consumerName,
+    quantity: p.quantity,
+    address: p.address || '',
+    pincode: p.pincode || '',
+    lat: p.lat ?? null,
+    lng: p.lng ?? null,
+    joinedAt: p.joinedAt,
+  }));
+  return base;
+}
+
 async function authenticate(req, res, next) {
   try {
     const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
@@ -372,6 +412,10 @@ app.get('/api/health', (_req, res) => {
 // when the process is up, including before the database connects. Readiness stays
 // on /api/health, which reports 503 until Atlas is reachable.
 app.get('/api/ready', (_req, res) => response(res, 200, { service: 'farmiqo-api', ready: true }));
+// Public runtime configuration (no database needed). The delivery fee percentage
+// is the single source of truth for checkout previews; order totals themselves are
+// always computed server-side when an order is created.
+app.get('/api/config', (_req, res) => response(res, 200, { deliveryFeePercent }));
 app.use('/api', (req, res, next) => mongoose.connection.readyState === 1
   ? next()
   : response(res, 503, { code: 'DATABASE_UNAVAILABLE', message: 'Marketplace data is unavailable until MONGODB_URI is configured.' }));
@@ -418,7 +462,7 @@ app.get('/api/auth/me', authenticate, (req, res) => response(res, 200, safeUser(
 app.put('/api/users/me', authenticate, async (req, res, next) => {
   try {
     // Email and role are intentionally not editable here.
-    const { name, phone, farmName, location, pincode } = req.body || {};
+    const { name, phone, farmName, location, pincode, farmLat, farmLng, farmAddress } = req.body || {};
     const changes = {};
     if (name !== undefined) {
       if (typeof name !== 'string' || !name.trim() || name.trim().length > 100) return response(res, 400, { code: 'INVALID_PROFILE', message: 'Name must be 1-100 characters' });
@@ -439,6 +483,23 @@ app.put('/api/users/me', authenticate, async (req, res, next) => {
     if (pincode !== undefined) {
       if (typeof pincode !== 'string' || (pincode && !/^\d{6}$/.test(pincode))) return response(res, 400, { code: 'INVALID_PROFILE', message: 'Pincode must be 6 digits' });
       changes.pincode = pincode;
+    }
+    if (farmLat !== undefined || farmLng !== undefined || farmAddress !== undefined) {
+      if (req.user.role !== 'FARMER') return response(res, 400, { code: 'INVALID_PROFILE', message: 'Only farmer accounts have a farm location' });
+      if (farmLat !== undefined) {
+        const lat = Number(farmLat);
+        if (!Number.isFinite(lat) || lat < -90 || lat > 90) return response(res, 400, { code: 'INVALID_PROFILE', message: 'Farm latitude must be between -90 and 90' });
+        changes.farmLat = lat;
+      }
+      if (farmLng !== undefined) {
+        const lng = Number(farmLng);
+        if (!Number.isFinite(lng) || lng < -180 || lng > 180) return response(res, 400, { code: 'INVALID_PROFILE', message: 'Farm longitude must be between -180 and 180' });
+        changes.farmLng = lng;
+      }
+      if (farmAddress !== undefined) {
+        if (typeof farmAddress !== 'string' || farmAddress.length > 300) return response(res, 400, { code: 'INVALID_PROFILE', message: 'Farm address is too long' });
+        changes.farmAddress = farmAddress.trim();
+      }
     }
     if (!Object.keys(changes).length) return response(res, 200, safeUser(req.user));
     const user = await User.findByIdAndUpdate(req.user.id, changes, { new: true, runValidators: true });
@@ -609,22 +670,94 @@ app.delete('/api/cart/items/:id', authenticate, requireRole('CONSUMER'), async (
   } catch (error) { next(error); }
 });
 
+const MAX_ADDRESSES = 10;
+function validateAddressBody(body) {
+  const { label = 'Home', house = '', street = '', area = '', landmark = '', pincode, phone = '', lat, lng, formattedAddress = '' } = body || {};
+  const latitude = Number(lat);
+  const longitude = Number(lng);
+  if (!['Home', 'College', 'Other'].includes(label)) return { error: 'Label must be Home, College, or Other' };
+  if (typeof pincode !== 'string' || !/^\d{6}$/.test(pincode)) return { error: 'A 6-digit pincode is required' };
+  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90) return { error: 'Latitude must be between -90 and 90' };
+  if (!Number.isFinite(longitude) || longitude < -180 || longitude > 180) return { error: 'Longitude must be between -180 and 180' };
+  for (const [key, value, max] of [['house', house, 120], ['street', street, 160], ['area', area, 160], ['landmark', landmark, 160], ['phone', phone, 32], ['formattedAddress', formattedAddress, 300]]) {
+    if (typeof value !== 'string' || value.length > max) return { error: `${key} is invalid or too long` };
+  }
+  return { value: { label, house: house.trim(), street: street.trim(), area: area.trim(), landmark: landmark.trim(), pincode, phone: phone.trim(), lat: latitude, lng: longitude, formattedAddress: formattedAddress.trim() } };
+}
+
+function addressView(address) {
+  return { id: address.id, label: address.label, house: address.house, street: address.street, area: address.area, landmark: address.landmark, pincode: address.pincode, phone: address.phone, lat: address.lat, lng: address.lng, formattedAddress: address.formattedAddress, createdAt: address.createdAt, updatedAt: address.updatedAt };
+}
+
+app.get('/api/addresses', authenticate, requireRole('CONSUMER'), async (req, res, next) => {
+  try {
+    const addresses = await Address.find({ userId: req.user.id }).sort({ updatedAt: -1 }).limit(50);
+    return response(res, 200, addresses.map(addressView));
+  } catch (error) { next(error); }
+});
+
+app.post('/api/addresses', authenticate, requireRole('CONSUMER'), async (req, res, next) => {
+  try {
+    const count = await Address.countDocuments({ userId: req.user.id });
+    if (count >= MAX_ADDRESSES) return response(res, 400, { code: 'ADDRESS_LIMIT', message: `You can save at most ${MAX_ADDRESSES} addresses` });
+    const { error, value } = validateAddressBody(req.body);
+    if (error) return response(res, 400, { code: 'INVALID_ADDRESS', message: error });
+    const created = await Address.create({ ...value, userId: req.user.id });
+    return response(res, 201, addressView(created));
+  } catch (error) { next(error); }
+});
+
+app.put('/api/addresses/:id', authenticate, requireRole('CONSUMER'), async (req, res, next) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return response(res, 404, { code: 'ADDRESS_NOT_FOUND', message: 'Address not found' });
+    const existing = await Address.findOne({ _id: req.params.id, userId: req.user.id });
+    if (!existing) return response(res, 404, { code: 'ADDRESS_NOT_FOUND', message: 'Address not found' });
+    const { error, value } = validateAddressBody({ ...existing.toObject(), ...req.body });
+    if (error) return response(res, 400, { code: 'INVALID_ADDRESS', message: error });
+    const updated = await Address.findOneAndUpdate({ _id: req.params.id, userId: req.user.id }, value, { new: true, runValidators: true });
+    if (!updated) return response(res, 404, { code: 'ADDRESS_NOT_FOUND', message: 'Address not found' });
+    return response(res, 200, addressView(updated));
+  } catch (error) { next(error); }
+});
+
+app.delete('/api/addresses/:id', authenticate, requireRole('CONSUMER'), async (req, res, next) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return response(res, 404, { code: 'ADDRESS_NOT_FOUND', message: 'Address not found' });
+    const deleted = await Address.findOneAndDelete({ _id: req.params.id, userId: req.user.id });
+    if (!deleted) return response(res, 404, { code: 'ADDRESS_NOT_FOUND', message: 'Address not found' });
+    return response(res, 200, { deleted: true });
+  } catch (error) { next(error); }
+});
+
 app.post('/api/orders', authenticate, requireRole('CONSUMER'), async (req, res, next) => {
   const session = await mongoose.startSession();
   try {
     const requestedItems = req.body?.items;
     const paymentMethod = req.body?.paymentMethod;
     const fulfillment = req.body?.fulfillment || 'DELIVERY';
-    const address = typeof req.body?.address === 'string' ? req.body.address.trim() : '';
-    const pincode = typeof req.body?.pincode === 'string' ? req.body.pincode.trim() : req.user.pincode;
+    let address = typeof req.body?.address === 'string' ? req.body.address.trim() : '';
+    let pincode = typeof req.body?.pincode === 'string' ? req.body.pincode.trim() : req.user.pincode;
+    let addressLabel = '';
+    let deliveryLat = null;
+    let deliveryLng = null;
+    if (req.body?.addressId !== undefined && req.body?.addressId !== null && req.body?.addressId !== '') {
+      if (!mongoose.isValidObjectId(req.body.addressId)) return response(res, 400, { code: 'INVALID_ADDRESS', message: 'Unknown delivery address' });
+      const saved = await Address.findOne({ _id: req.body.addressId, userId: req.user.id });
+      if (!saved) return response(res, 404, { code: 'ADDRESS_NOT_FOUND', message: 'Unknown delivery address' });
+      address = saved.formattedAddress || [saved.house, saved.street, saved.area, saved.landmark].filter(Boolean).join(', ');
+      pincode = saved.pincode;
+      addressLabel = saved.label;
+      deliveryLat = saved.lat;
+      deliveryLng = saved.lng;
+    }
     if (requestedItems !== undefined && (!Array.isArray(requestedItems) || requestedItems.length > 100)) {
       return response(res, 400, { code: 'INVALID_ORDER_ITEMS', message: 'Order items must be a list of at most 100 entries' });
     }
     if (!['COD', 'UPI_MOCK'].includes(paymentMethod)) {
       return response(res, 400, { code: 'INVALID_PAYMENT_METHOD', message: 'Choose COD or the simulated UPI option' });
     }
-    if (!['DELIVERY', 'PICKUP'].includes(fulfillment)) {
-      return response(res, 400, { code: 'INVALID_FULFILLMENT', message: 'Choose delivery or pickup' });
+    if (fulfillment !== 'DELIVERY') {
+      return response(res, 400, { code: 'INVALID_FULFILLMENT', message: 'Orders are delivery only' });
     }
     if (fulfillment === 'DELIVERY' && (!address || address.length > 300 || !/^\d{6}$/.test(pincode || ''))) {
       return response(res, 400, { code: 'INVALID_DELIVERY_ADDRESS', message: 'A delivery address and 6-digit pincode are required' });
@@ -658,7 +791,7 @@ app.post('/api/orders', authenticate, requireRole('CONSUMER'), async (req, res, 
           });
           const subtotal = items.reduce((sum, item) => sum + item.subtotal, 0);
           const communitySavings = 0;
-          const deliveryFee = Number(process.env.DELIVERY_FEE ?? 0);
+          const deliveryFee = deliveryFeeFor(Math.round(subtotal * 100) / 100);
           const orderId = `FQ-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
           const subOrders = [...byFarmer.values()].map((group, index) => ({ ...group, subOrderId: `${orderId}-${String.fromCharCode(65 + index)}` }));
           [created] = await Order.create([{
@@ -672,13 +805,16 @@ app.post('/api/orders', authenticate, requireRole('CONSUMER'), async (req, res, 
             deliveryFee,
             discount: 0,
             communitySavings,
-            total: Math.max(0, subtotal + deliveryFee - communitySavings),
+            total: Math.max(0, Math.round((subtotal + deliveryFee - communitySavings) * 100) / 100),
             paymentMethod,
             paymentStatus: 'PENDING',
             status: 'ORDER_PLACED',
             fulfillment,
             address,
             pincode,
+            addressLabel,
+            deliveryLat,
+            deliveryLng,
             expectedAt: req.body?.expectedAt || null,
           }], { session });
           if (cart) {
@@ -778,13 +914,15 @@ app.patch('/api/orders/:id/status', authenticate, requireRole('FARMER'), async (
           excludedStatuses.has(entry.status)
             ? 0
             : entry.itemIndexes.reduce((amount, index) => amount + order.items[index].subtotal, 0)
-        ), 0);
-        order.paymentCollectedAmount = collected;
-        order.paymentCollectedBy = collected ? req.user.name : undefined;
-        order.paymentCollectedAt = collected ? new Date() : undefined;
-        order.paymentStatus = collected >= due && allResolved && collected > 0
+        ), 0) + (order.deliveryFee || 0);
+        // The delivery fee is collected together with the order total on delivery.
+        const collectedTotal = collected + (collected > 0 && allResolved ? (order.deliveryFee || 0) : 0);
+        order.paymentCollectedAmount = collectedTotal;
+        order.paymentCollectedBy = collectedTotal ? req.user.name : undefined;
+        order.paymentCollectedAt = collectedTotal ? new Date() : undefined;
+        order.paymentStatus = collectedTotal >= due && allResolved && collectedTotal > 0
           ? 'PAID'
-          : collected > 0 ? 'PARTIALLY_PAID' : 'PENDING';
+          : collectedTotal > 0 ? 'PARTIALLY_PAID' : 'PENDING';
       }
       await order.save({ session });
     });
@@ -835,7 +973,7 @@ app.post('/api/bulk/groups', authenticate, async (req, res, next) => {
       typeof deliveryInfo !== 'string' || deliveryInfo.length > 300 ||
       (pincode !== undefined && (typeof pincode !== 'string' || (pincode && !/^\d{6}$/.test(pincode))))
     ) {
-      return response(res, 400, { code: 'INVALID_BULK_GROUP', message: 'Target quantity, share limits, and pickup details are invalid' });
+      return response(res, 400, { code: 'INVALID_BULK_GROUP', message: 'Target quantity, share limits, and delivery details are invalid' });
     }
     let created;
     for (let attempts = 0; ; attempts++) {
@@ -896,6 +1034,16 @@ app.get('/api/bulk/groups/:id', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+app.get('/api/farmer/bulk/groups', authenticate, requireRole('FARMER'), async (req, res, next) => {
+  try {
+    const groups = await BulkGroup.find({ $or: [{ farmerId: req.user.id }, { assignedFarmerId: req.user.id }] })
+      .populate(['farmerId', 'assignedFarmerId'])
+      .sort({ updatedAt: -1 })
+      .limit(200);
+    return response(res, 200, groups.map(bulkGroupFarmerView));
+  } catch (error) { next(error); }
+});
+
 app.post('/api/bulk/groups/:id/join', authenticate, requireRole('CONSUMER'), async (req, res, next) => {
   try {
     const rawQty = Number(req.body?.quantity);
@@ -907,14 +1055,30 @@ app.post('/api/bulk/groups/:id/join', authenticate, requireRole('CONSUMER'), asy
     if (quantity < candidate.minPerParticipant || (candidate.maxPerParticipant != null && quantity > candidate.maxPerParticipant)) {
       return response(res, 400, { code: 'INVALID_SHARE', message: 'Quantity is outside this group’s per-person limits' });
     }
-    const address = typeof req.body?.address === 'string' ? req.body.address.trim() : '';
-    const participantPincode = typeof req.body?.pincode === 'string' ? req.body.pincode.trim() : '';
+    let address = typeof req.body?.address === 'string' ? req.body.address.trim() : '';
+    let participantPincode = typeof req.body?.pincode === 'string' ? req.body.pincode.trim() : '';
+    let joinLat = req.body?.lat === undefined || req.body?.lat === null || req.body?.lat === '' ? null : Number(req.body.lat);
+    let joinLng = req.body?.lng === undefined || req.body?.lng === null || req.body?.lng === '' ? null : Number(req.body.lng);
+    if (req.body?.addressId !== undefined && req.body?.addressId !== null && req.body?.addressId !== '') {
+      if (!mongoose.isValidObjectId(req.body.addressId)) return response(res, 400, { code: 'INVALID_ADDRESS', message: 'Unknown delivery address' });
+      const saved = await Address.findOne({ _id: req.body.addressId, userId: req.user.id });
+      if (!saved) return response(res, 404, { code: 'ADDRESS_NOT_FOUND', message: 'Unknown delivery address' });
+      address = saved.formattedAddress || [saved.house, saved.street, saved.area, saved.landmark].filter(Boolean).join(', ');
+      participantPincode = saved.pincode;
+      joinLat = saved.lat;
+      joinLng = saved.lng;
+    }
     if (!address || address.length > 300 || !/^\d{6}$/.test(participantPincode)) {
       return response(res, 400, { code: 'INVALID_DELIVERY_ADDRESS', message: 'A delivery address and 6-digit pincode are required to join' });
     }
+    if ((joinLat !== null && (!Number.isFinite(joinLat) || joinLat < -90 || joinLat > 90)) ||
+        (joinLng !== null && (!Number.isFinite(joinLng) || joinLng < -180 || joinLng > 180)) ||
+        (joinLat === null) !== (joinLng === null)) {
+      return response(res, 400, { code: 'INVALID_COORDINATES', message: 'Coordinates must be a valid latitude/longitude pair' });
+    }
     const updated = await BulkGroup.findOneAndUpdate(
       { ...query, status: 'OPEN', 'participants.consumerId': { $ne: req.user.id }, collectedQuantity: { $lte: candidate.targetQuantity - quantity } },
-      { $inc: { collectedQuantity: quantity }, $push: { participants: { consumerId: req.user.id, consumerName: req.user.name, quantity, address, pincode: participantPincode, joinedAt: new Date() } } },
+      { $inc: { collectedQuantity: quantity }, $push: { participants: { consumerId: req.user.id, consumerName: req.user.name, quantity, address, pincode: participantPincode, lat: joinLat, lng: joinLng, joinedAt: new Date() } } },
       { new: true },
     ).populate(['farmerId', 'assignedFarmerId']);
     if (!updated) {
@@ -1090,7 +1254,8 @@ app.post('/api/bulk/groups/:id/fulfil', authenticate, requireRole('FARMER'), asy
             if (!participant.address || !/^\d{6}$/.test(participant.pincode || '')) {
               throw Object.assign(new Error('A participant is missing a delivery address'), { status: 409, code: 'ADDRESS_REQUIRED' });
             }
-            const subtotal = listing.price * share;
+            const subtotal = Math.round(listing.price * share * 100) / 100;
+            const fee = deliveryFeeFor(subtotal);
             const orderId = `FQ-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
             const [created] = await Order.create([{
               orderId,
@@ -1100,16 +1265,19 @@ app.post('/api/bulk/groups/:id/fulfil', authenticate, requireRole('FARMER'), asy
               items: [{ listingId: listing.id, farmerId: supplierId, farmerName: supplier?.name || req.user.name, productName: listing.productName, quantity: share, priceAtPurchase: listing.price, subtotal }],
               subOrders: [{ subOrderId: `${orderId}-A`, farmerId: supplierId, farmerName: supplier?.name || req.user.name, itemIndexes: [0], status: 'ORDER_PLACED' }],
               subtotal,
-              deliveryFee: 0,
+              deliveryFee: fee,
               discount: 0,
               communitySavings: 0,
-              total: Math.max(0, subtotal + Number(process.env.DELIVERY_FEE ?? 0)),
+              total: Math.max(0, Math.round((subtotal + fee) * 100) / 100),
               paymentMethod: 'COD',
               paymentStatus: 'PENDING',
               status: 'ORDER_PLACED',
               fulfillment: 'DELIVERY',
               address: participant.address,
               pincode: participant.pincode,
+              addressLabel: '',
+              deliveryLat: participant.lat ?? null,
+              deliveryLng: participant.lng ?? null,
               expectedAt: group.slotDate || null,
             }], { session });
             createdOrders.push(created);
@@ -1294,9 +1462,14 @@ io.use((socket, next) => {
 });
 io.on('connection', (socket) => socket.join(`user:${socket.user.sub}`));
 
-if (!Number.isFinite(Number(process.env.DELIVERY_FEE ?? 0)) || Number(process.env.DELIVERY_FEE ?? 0) < 0) {
-  throw new Error('DELIVERY_FEE must be a non-negative number.');
+const deliveryFeePercent = Number(process.env.DELIVERY_FEE_PERCENT ?? 5);
+if (!Number.isFinite(deliveryFeePercent) || deliveryFeePercent < 0 || deliveryFeePercent > 100) {
+  throw new Error('DELIVERY_FEE_PERCENT must be a number between 0 and 100.');
 }
+// Uniform percentage-based Farmiqo delivery fee. Every order is a DELIVERY
+// order, so every order carries it. Always computed server-side — the frontend
+// may preview it via GET /api/config but can never set it.
+const deliveryFeeFor = (subtotal) => Math.round(subtotal * deliveryFeePercent) / 100;
 
 let reconnectTimer;
 let shuttingDown = false;

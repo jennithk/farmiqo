@@ -1,7 +1,42 @@
-import { addCartItem, assignBulkGroup, cancelBulkGroup, confirmPasswordReset, connectRealtime, createBulkGroup, createListing, createOrder, deleteAccount as deleteAccountRequest, deleteListing as deleteListingRequest, fulfilBulkGroup, getBulkGroup, getBulkGroups, getCart, getCurrentUser, getFarmerListings, getFarmerOrders, getForecast, getListings, getOrders, getSavedUser, getUploadConfig, getUploadSignature, isAuthenticated, joinBulkGroup, leaveBulkGroup, login, logout as clearSession, register, removeCartItem, requestPasswordReset, unassignBulkGroup, updateCartItem, updateListing, updateOrderStatus, updateProfile } from './services/api.js';
+import { addCartItem, assignBulkGroup, cancelBulkGroup, confirmPasswordReset, connectRealtime, createBulkGroup, createListing, createOrder, deleteAccount as deleteAccountRequest, deleteListing as deleteListingRequest, fulfilBulkGroup, getBulkGroup, getBulkGroups, getFarmerBulkGroups, getCart, getCurrentUser, getFarmerListings, getFarmerOrders, getForecast, getListings, getOrders, getSavedUser, getUploadConfig, getUploadSignature, isAuthenticated, joinBulkGroup, leaveBulkGroup, login, logout as clearSession, register, removeCartItem, requestPasswordReset, unassignBulkGroup, updateCartItem, updateListing, updateOrderStatus, updateProfile } from './services/api.js';
 import en from './i18n/en.js';
 import te from './i18n/te.js';
 import { categoryIcon, icon, produceIcon } from './services/icons.js';
+import 'leaflet/dist/leaflet.css';
+
+const OSM_ATTRIBUTION = '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors';
+const NOMINATIM = 'https://nominatim.openstreetmap.org';
+let leafletModule = null;
+async function loadLeaflet() {
+  if (!leafletModule) leafletModule = await import('leaflet');
+  return leafletModule.default || leafletModule;
+}
+function pinIcon(L) {
+  return L.divIcon({ className: 'map-pin-wrap', html: '<div class="map-pin"></div>', iconSize: [26, 26], iconAnchor: [13, 13] });
+}
+let activeMap = null;
+let activeMarker = null;
+function destroyMap() {
+  try { activeMarker?.remove(); } catch {}
+  try { activeMap?.remove(); } catch {}
+  activeMap = null;
+  activeMarker = null;
+}
+async function searchPlaces(query) {
+  const url = `${NOMINATIM}/search?format=jsonv2&limit=5&countrycodes=in&q=${encodeURIComponent(query)}`;
+  const res = await fetch(url, { headers: { Accept: 'application/json' } });
+  if (!res.ok) throw new Error('Search failed');
+  return res.json();
+}
+async function reversePlace(lat, lng) {
+  const url = `${NOMINATIM}/reverse?format=jsonv2&lat=${lat}&lon=${lng}`;
+  const res = await fetch(url, { headers: { Accept: 'application/json' } });
+  if (!res.ok) throw new Error('Lookup failed');
+  return res.json();
+}
+function defaultCenter() {
+  return { lat: 16.5062, lng: 80.648, zoom: 12, note: 'Showing Vijayawada — search or move the pin to your location.' };
+}
 
 const ASSET='/assets/';
 const IMG={
@@ -49,13 +84,18 @@ const state={
   offerForm: { listingId: '', target: '', min: '', max: '', note: '', slot: '' },
 
   groupForm: { product: '', target: '', min: '', max: '', info: '', pincode: '' },
+  bulkJoinAddr: {},
   groupFilter: 'All',
   communityRequests: [],
   uploadUrl: '',
  selectedProduct:null,
  payMethod:'UPI',
- checkoutAddress:'',
- checkoutPincode:'',
+ addresses:[],
+ selectedAddressId:'',
+ feePercent:5,
+ mapCtx:null,
+ mapDraft:null,
+ addrForm:{label:'Home',house:'',street:'',area:'',landmark:'',pincode:'',phone:'',editingId:''},
  language:localStorage.getItem('farmiqo-language')==='te'?'te':'en',
  cat:'All',
  search:'',
@@ -65,10 +105,14 @@ function money(n){return new Intl.NumberFormat('en-IN',{style:'currency',currenc
 function cartItems(){return Object.entries(state.cart).map(([id,qty])=>({p:products.find(x=>x.id===id),qty})).filter(x=>x.p&&x.qty>0)}
 function cartCount(){return cartItems().reduce((s,x)=>s+x.qty,0)}
 function toast(msg){const el=document.getElementById('toast');el.textContent=localizeText(msg);el.classList.add('show');clearTimeout(window.__t);window.__t=setTimeout(()=>el.classList.remove('show'),2200)}
-function setScreen(s){state.screen=s;state.selectedProduct=null;if(s==='consumerHome'||s==='search'||s==='cart')refreshMarketplace();if(s==='consumerHome'&&state.role==='consumer')refreshBulkGroups();if(s==='listings'||s==='farmerHome'||s==='bulkOrders')refreshFarmerData();if(s==='bulkOrders'&&state.role==='farmer')refreshFarmerOffers();if(s==='bulkGroups'&&state.role==='consumer')refreshBulkGroups();if(s==='forecast'&&state.role==='farmer')refreshForecast();if(s==='orders')refreshOrders();render()}
+function setScreen(s){state.screen=s;state.selectedProduct=null;if(s==='consumerHome'||s==='search'||s==='cart')refreshMarketplace();if(s==='consumerHome'&&state.role==='consumer')refreshBulkGroups();if(s==='listings'||s==='farmerHome'||s==='bulkOrders')refreshFarmerData();if(s==='bulkOrders'&&state.role==='farmer')refreshFarmerOffers();if(s==='bulkGroups'&&state.role==='consumer')refreshBulkGroups();if(s==='forecast'&&state.role==='farmer')refreshForecast();if(s==='orders')refreshOrders();if(s==='payment'&&state.role==='consumer')refreshAddresses();if(s==='profile')refreshAddresses();render()}
+function addressText(a){if(!a)return '';return [a.formattedAddress||[a.house,a.street,a.area,a.landmark].filter(Boolean).join(', '),a.pincode].filter(Boolean).join(' · ')}
+async function refreshFeeConfig(){try{const config=await getFeeConfig();if(Number.isFinite(Number(config?.deliveryFeePercent)))state.feePercent=Number(config.deliveryFeePercent)}catch{}}
+async function refreshAddresses(){if(state.role!=='consumer')return;try{state.addresses=await getAddresses();if(!state.addresses.some((a)=>a.id===state.selectedAddressId)){const saved=localStorage.getItem('farmiqo-last-address');state.selectedAddressId=state.addresses.some((a)=>a.id===saved)?saved:(state.addresses[0]?.id||'')}if(['payment','profile'].includes(state.screen))render()}catch(error){if(error.status!==401)toast(error.message)}}
 function communityBanner(){const open=state.bulkGroups.filter((g)=>g.status==='OPEN');if(!open.length)return '';const top=open.map((g)=>({g,pct:g.targetQuantity?g.collectedQuantity/g.targetQuantity*100:0})).sort((a,b)=>b.pct-a.pct)[0];const pct=Math.min(100,Math.round(top.pct));return `<div class="forecast-banner"><div class="row"><div><div class="title">Save more with your community</div><div class="desc">${escapeHtml(top.g.productName)} group is ${pct}% full</div></div><button class="btn yellow" style="padding:10px 16px" onclick="setScreen('bulkGroups')">Join</button></div></div>`}
-async function refreshBulkGroups(){if(state.role!=='consumer')return;try{state.bulkGroups=await getBulkGroups({status:'ALL'});if(state.screen==='bulkGroups')render()}catch(error){if(error.status!==401)toast(error.message)}}
-async function refreshFarmerOffers(){if(state.role!=='farmer')return;try{const [own,assigned,requests]=await Promise.all([getBulkGroups({farmerId:state.user?.id,status:'ALL'}),getBulkGroups({assignedFarmerId:state.user?.id,status:'ALL'}),getBulkGroups({model:'community',status:'OPEN'})]);const seen=new Set();state.bulkOffers=[...own,...assigned].filter((g)=>(seen.has(g.groupId)?false:(seen.add(g.groupId),true)));state.communityRequests=requests.filter((g)=>!g.assignedFarmerId&&String(g.farmerId?.id||g.farmer?.id||'')!==state.user?.id);if(state.screen==='bulkOrders')render()}catch(error){if(error.status!==401)toast(error.message)}}
+async function refreshBulkGroups(){if(state.role!=='consumer')return;try{const [groups,addresses]=await Promise.all([getBulkGroups({status:'ALL'}),getAddresses()]);state.bulkGroups=groups;state.addresses=addresses;if(!state.addresses.some((a)=>a.id===state.selectedAddressId)){const saved=localStorage.getItem('farmiqo-last-address');state.selectedAddressId=state.addresses.some((a)=>a.id===saved)?saved:(state.addresses[0]?.id||'')}if(state.screen==='bulkGroups')render()}catch(error){if(error.status!==401)toast(error.message)}}
+function bulkJoinAddressId(groupId){return state.bulkJoinAddr?.[groupId]||state.selectedAddressId||''}
+async function refreshFarmerOffers(){if(state.role!=='farmer')return;try{const [mine,requests]=await Promise.all([getFarmerBulkGroups(),getBulkGroups({model:'community',status:'OPEN'})]);const seen=new Set();state.bulkOffers=mine.filter((g)=>(seen.has(g.groupId)?false:(seen.add(g.groupId),true)));state.communityRequests=requests.filter((g)=>!g.assignedFarmerId&&String(g.farmerId?.id||g.farmer?.id||'')!==state.user?.id);if(state.screen==='bulkOrders')render()}catch(error){if(error.status!==401)toast(error.message)}}
 async function createCommunityUI(){const f=state.groupForm;try{await createBulkGroup({productName:f.product.trim(),targetQuantity:Number(f.target),minPerParticipant:f.min===''?undefined:Number(f.min),maxPerParticipant:f.max===''?undefined:Number(f.max),deliveryInfo:f.info,pincode:f.pincode||undefined});state.groupForm={product:'',target:'',min:'',max:'',info:'',pincode:''};toast('Community group created');await refreshBulkGroups();render()}catch(error){toast(error.message)}}
 async function assignBulkGroupUI(groupId){try{await assignBulkGroup(groupId);toast('Group assigned to you');await refreshFarmerOffers()}catch(error){toast(error.message)}}
 async function unassignBulkGroupUI(groupId){try{await unassignBulkGroup(groupId);toast('Assignment released');await refreshFarmerOffers()}catch(error){toast(error.message)}}
@@ -79,11 +123,11 @@ function normalizeListing(row){const date=new Date(row.harvestedAt);const age=Ma
 async function refreshMarketplace(){try{products=(await getListings({category:state.cat,q:state.search})).map(normalizeListing);if(state.role==='consumer'){const cart=await getCart();state.cart=Object.fromEntries(cart.map(entry=>[entry.listing.id,entry.quantity]))}render()}catch(error){if(error.status===401){clearSession();state.role=null;state.user=null;state.screen='role';render()}else toast(error.message)}}
 async function refreshFarmerData(){if(state.role!=='farmer')return;try{const [listings,orders]=await Promise.all([getFarmerListings(),getFarmerOrders()]);state.listings=listings.map(normalizeListing);state.orders=orders.map(({order,subOrder})=>({id:order.orderId,status:subOrder.status,items:subOrder.itemIndexes.map(index=>{const item=order.items[index];return `${item.productName} ${item.quantity}kg`}).join(' · '),amount:subOrder.itemIndexes.reduce((sum,index)=>sum+order.items[index].subtotal,0),consumer:order.consumerName,paymentMethod:order.paymentMethod,subOrderId:subOrder.subOrderId,rawStatus:subOrder.status}));if(state.screen==='farmerHome'||state.screen==='listings'||state.screen==='bulkOrders')render()}catch(error){if(error.status===401){clearSession();state.role=null;state.user=null;state.screen='role';render()}else toast(error.message)}}
 async function refreshOrders(){if(state.role!=='consumer')return;try{state.orders=(await getOrders()).map(order=>({id:order.orderId,status:({ORDER_PLACED:'Open',FARMER_ACCEPTED:'Accepted',FARMER_REJECTED:'Rejected',PREPARING:'Preparing',READY_FOR_PICKUP:'Ready for pickup',OUT_FOR_DELIVERY:'Out for delivery',DELIVERED:'Delivered',COMPLETED:'Completed',CANCELLED:'Cancelled'})[order.status]||order.status,rawStatus:order.status,items:order.items.map(item=>`${item.productName} ${item.quantity}kg · ${item.farmerName}`).join(' · '),amount:order.total,group:'',paymentMethod:order.paymentMethod,paymentStatus:order.paymentStatus,raw:order}));if(state.screen==='orders')render()}catch(error){toast(error.message)}}
-async function submitAuth(event){event.preventDefault();const values={email:document.getElementById('auth-email').value.trim(),password:document.getElementById('auth-password').value};try{const result=state.authMode==='register'?await register({...values,name:document.getElementById('auth-name').value.trim(),phone:document.getElementById('auth-phone')?.value.trim()||'',role:state.authRole==='farmer'?'FARMER':'CONSUMER',farmName:document.getElementById('auth-farm')?.value.trim()||'',pincode:document.getElementById('auth-pincode')?.value.trim()||''}):await login(values);if(result.user.role.toLowerCase()!==state.authRole){clearSession();throw new Error('This account belongs to a different role. Choose the matching role to continue.')}state.user=result.user;state.role=result.user.role.toLowerCase();state.screen=state.role==='farmer'?'farmerHome':'consumerHome';connectRealtime(handleRealtimeEvent);await (state.role==='farmer'?refreshFarmerData():refreshMarketplace());render()}catch(error){const target=document.getElementById('auth-error');if(target)target.textContent=error.message}}
+async function submitAuth(event){event.preventDefault();const values={email:document.getElementById('auth-email').value.trim(),password:document.getElementById('auth-password').value};try{const result=state.authMode==='register'?await register({...values,name:document.getElementById('auth-name').value.trim(),phone:document.getElementById('auth-phone')?.value.trim()||'',role:state.authRole==='farmer'?'FARMER':'CONSUMER',farmName:document.getElementById('auth-farm')?.value.trim()||'',pincode:document.getElementById('auth-pincode')?.value.trim()||''}):await login(values);if(result.user.role.toLowerCase()!==state.authRole){clearSession();throw new Error('This account belongs to a different role. Choose the matching role to continue.')}state.user=result.user;state.role=result.user.role.toLowerCase();state.screen=state.role==='farmer'?'farmerHome':'consumerHome';connectRealtime(handleRealtimeEvent);await refreshFeeConfig();await (state.role==='farmer'?refreshFarmerData():refreshMarketplace());await refreshAddresses();render()}catch(error){const target=document.getElementById('auth-error');if(target)target.textContent=error.message}}
 function toggleAuthMode(){state.authMode=state.authMode==='register'?'login':'register';render()}
 async function handleRealtimeEvent(event){if(event.startsWith('listing:')&&state.role==='consumer'){await refreshMarketplace();return}if(event==='bulk:updated'){if(state.role==='consumer')await refreshBulkGroups();else await refreshFarmerOffers();return}if(event.startsWith('order:')||event==='notification:new'){if(state.role==='farmer')await refreshFarmerData();else await refreshOrders();toast(event==='order:created'?'New order received':'Order status updated')}}
 function header(title,sub,back=false){return `<div class="header">${back?`<button class="icon-btn" onclick="goBack()">‹</button>`:''}<div class="brand"><img class="brand-mark" src="/icon.svg" alt=""><div class="brand-text">Farmiqo<small>Farmer to Consumer</small></div></div><div class="header-copy"><div class="header-title">${title}</div><div class="header-sub">${sub||''}</div></div><button class="icon-btn" onclick="openProfile()">${back?'♡':'⌁'}</button></div>`}
-function goBack(){ if(['product','cart','payment'].includes(state.screen)){state.screen='consumerHome'} else if(state.screen==='profile') state.screen=state.role==='farmer'?'farmerHome':'consumerHome'; else state.screen=state.role==='farmer'?'farmerHome':'consumerHome'; render() }
+function goBack(){ if(['product','cart','payment'].includes(state.screen)){state.screen='consumerHome'} else if(state.screen==='profile') state.screen=state.role==='farmer'?'farmerHome':'consumerHome'; else if(state.screen==='addressPicker'){state.screen=state.mapCtx?.mode==='farm'?'profile':(state.mapCtx?.mode==='bulkJoin'?'bulkGroups':(state.role==='farmer'?'farmerHome':'profile'))} else if(state.screen==='addressForm'){state.screen='addressPicker'} else state.screen=state.role==='farmer'?'farmerHome':'consumerHome'; render() }
 function openProfile(){state.screen='profile';render()}
 function farmerNav(){return nav([{s:'farmerHome',i:'⌂',t:'Home'},{s:'listings',i:'☷',t:'My Listings'},{s:'bulkOrders',i:'◈',t:'Bulk Orders'},{s:'forecast',i:'▥',t:'Forecast'},{s:'profile',i:'♙',t:'Profile'}])}
 function consumerNav(){return nav([{s:'consumerHome',i:'⌂',t:'Home'},{s:'search',i:'⌕',t:'Search'},{s:'bulkGroups',i:'♧',t:'Bulk Groups'},{s:'cart',i:'🛒',t:'Cart'},{s:'orders',i:'◈',t:'Orders'},{s:'profile',i:'♙',t:'Profile'}])}
@@ -101,10 +145,11 @@ function bulkGroups(){const groups=[['BHEL Community','Tomato','12/20kg pooled',
 function cart(){
   const items=cartItems();
   const totalQty=items.reduce((s,x)=>s+x.qty,0);
-  const subtotal=items.reduce((s,x)=>s+x.p.price*x.qty,0);
-  const total=Math.max(0,subtotal);
+  const subtotal=Math.round(items.reduce((s,x)=>s+x.p.price*x.qty,0)*100)/100;
+  const cartFee=Math.round(subtotal*state.feePercent)/100;
+  const total=Math.max(0,Math.round((subtotal+cartFee)*100)/100);
   const itemHtml=items.map(x=>`<div class="card cart-item"><img src="${ASSET+x.p.img}"><div><div style="font-weight:900">${x.p.name}</div><div class="muted" style="font-size:12px">${x.p.farmer}</div><div class="qty-control" style="margin-top:8px"><button onclick="changeQty('${x.p.id}',-1)">−</button><span>${x.qty} kg</span><button onclick="changeQty('${x.p.id}',1)">+</button></div></div><div style="text-align:right"><button class="trash" onclick="removeFromCart('${x.p.id}')">⌫</button><div style="font-weight:900;color:var(--green);margin-top:22px">${money(x.p.price*x.qty)}</div></div></div>`).join('');
-  const content=items.length?`<div class="stack">${itemHtml}</div><div class="card summary" style="margin-top:14px"><div class="summary-line"><span>Items subtotal</span><b>${money(subtotal)}</b></div><div class="summary-line"><span>Delivery</span><b>FREE</b></div><div class="summary-line total"><span>Total</span><b style="color:var(--green)">${money(total)}</b></div></div><button class="btn primary block" style="margin-top:14px" onclick="state.screen='payment';render()">→ Place Order · ${money(total)}<br><small>ఆర్డర్ చేయండి</small></button>`:`<div class="empty"><div style="font-size:48px">🧺</div><h3>Your cart is empty</h3><p>Add fresh produce from nearby farms.</p><button class="btn primary" onclick="setScreen('consumerHome')">Browse produce</button></div>`;
+  const content=items.length?`<div class="stack">${itemHtml}</div><div class="card summary" style="margin-top:14px"><div class="summary-line"><span>Items subtotal</span><b>${money(subtotal)}</b></div><div class="summary-line"><span>Delivery fee (${state.feePercent}%)</span><b>${money(cartFee)}</b></div><div class="summary-line total"><span>Total</span><b style="color:var(--green)">${money(total)}</b></div></div><button class="btn primary block" style="margin-top:14px" onclick="state.screen='payment';render()">→ Place Order · ${money(total)}<br><small>ఆర్డర్ చేయండి</small></button>`:`<div class="empty"><div style="font-size:48px">🧺</div><h3>Your cart is empty</h3><p>Add fresh produce from nearby farms.</p><button class="btn primary" onclick="setScreen('consumerHome')">Browse produce</button></div>`;
   return `<div class="screen">${header('Your cart',totalQty+' items · '+totalQty+' kg',true)}<div class="container">${content}</div>${consumerNav()}</div>`;
 }
 function orders(){const os=state.orders.length?state.orders:[{id:'FQ-2841',status:'Accepted',items:'Tomato 2kg · Spinach 1kg · Banana 2kg',amount:168,group:'BHEL Community'},{id:'FQ-2829',status:'Aggregated',items:'Leafy greens 3kg · Onion 2kg',amount:132,group:'Poranki Greens'},{id:'FQ-2786',status:'Delivered',items:'Potato 3kg · Tomato 2kg',amount:204,group:''}];return `<div class="screen">${header('Orders','Track every farm order')}<div class="container"><div class="chips" style="background:#e7f2e8;padding:2px;border-radius:999px"><button class="chip active" style="flex:1">Active · 2</button><button class="chip" style="flex:1;background:transparent">Past orders</button></div><div class="stack" style="margin-top:14px">${os.map(o=>`<div class="card" style="padding:16px"><div class="row"><div><b>#${o.id}</b><div class="muted" style="font-size:12px">Placed Sep 30 · ${o.group||'Farmiqo'}</div></div><span class="badge ${o.status==='Delivered'?'':'blue'}">${o.status}</span></div><div class="muted" style="font-size:13px;margin-top:14px">${o.items}</div><div class="timeline">${['Open','Aggregated','Accepted','Delivered'].map((s,i)=>{const idx=['Open','Aggregated','Accepted','Delivered'].indexOf(o.status);return `<div class="timeline-step ${i<=idx?'done':''}"><div class="dot"></div><div class="timeline-label">${s}</div></div>`}).join('')}</div><div class="row" style="margin-top:14px"><b style="color:var(--green)">${money(o.amount)}</b><button class="btn secondary" onclick="reorder('${o.id}')">↻ Reorder</button></div></div>`).join('')}</div></div>${consumerNav()}</div>`}
@@ -126,7 +171,7 @@ async function reorder(id){const order=state.orders.find(item=>item.id===id);if(
 function switchRole(){clearSession();state.user=null;state.role=null;state.cart={};state.orders=[];state.listings=[];state.screen='role';render()}
 function logout(){clearSession();state.user=null;state.role=null;state.cart={};state.orders=[];state.listings=[];state.screen='role';render()}
 function modal(){return `<div id="modal" class="modal-back" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="row"><h3>Add produce</h3><button class="icon-btn" onclick="closeModal()">×</button></div><div class="form-grid"><div class="full"><label class="muted">Produce name</label><input id="f-name" class="input" placeholder="e.g. Tomato"></div><div><label class="muted">Price / kg</label><input id="f-price" class="input" type="number" value="32"></div><div><label class="muted">Quantity / kg</label><input id="f-qty" class="input" type="number" value="20"></div><div class="full"><label class="muted">Product photo (optional)</label><div class="row" style="margin-bottom:8px"><button type="button" class="btn secondary" onclick="document.getElementById('f-camera').click()">Take photo</button><button type="button" class="btn secondary" onclick="document.getElementById('f-photo').click()">Choose photo</button></div><input id="f-camera" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" hidden onchange="uploadPhotoUI(this)"><input id="f-photo" type="file" accept="image/jpeg,image/png,image/webp" hidden onchange="uploadPhotoUI(this)"><input id="f-url" class="input" style="margin-top:8px" placeholder="Photo URL (https)" oninput="state.uploadUrl=this.value;state.uploadSource=''"><div class="muted" style="font-size:11px;margin-top:6px">Your photos appear first. AI imagery is not connected; illustrations are labeled.</div></div></div><button class="btn primary block" style="margin-top:14px" onclick="addListing()">Save listing</button></div></div>`}
-function render(){let body;if(!state.role)body=roleScreen();else if(state.screen==='farmerHome')body=farmerHome();else if(state.screen==='listings')body=listings();else if(state.screen==='bulkOrders')body=bulkOrders();else if(state.screen==='forecast')body=forecast();else if(state.screen==='consumerHome')body=consumerHome();else if(state.screen==='search')body=searchScreen();else if(state.screen==='product'&&state.selectedProduct)body=productDetail(state.selectedProduct);else if(state.screen==='bulkGroups')body=bulkGroups();else if(state.screen==='cart')body=cart();else if(state.screen==='orders')body=orders();else if(state.screen==='profile')body=profile();else if(state.screen==='payment')body=payment();else body=state.role==='farmer'?farmerHome():consumerHome();document.getElementById('app').innerHTML=`<div class="app-shell">${body}${modal()}</div>`}
+function render(){let body;if(!state.role)body=roleScreen();else if(state.screen==='farmerHome')body=farmerHome();else if(state.screen==='listings')body=listings();else if(state.screen==='bulkOrders')body=bulkOrders();else if(state.screen==='forecast')body=forecast();else if(state.screen==='consumerHome')body=consumerHome();else if(state.screen==='search')body=searchScreen();else if(state.screen==='product'&&state.selectedProduct)body=productDetail(state.selectedProduct);else if(state.screen==='bulkGroups')body=bulkGroups();else if(state.screen==='cart')body=cart();else if(state.screen==='orders')body=orders();else if(state.screen==='profile')body=profile();else if(state.screen==='payment')body=payment();else if(state.screen==='addressPicker')body=addressPicker();else if(state.screen==='addressForm')body=addressForm();else body=state.role==='farmer'?farmerHome():consumerHome();document.getElementById('app').innerHTML=`<div class="app-shell">${body}${modal()}</div>`}
 
 function localizeText(source){if(state.language==='en')return source.replace(/[\u0C00-\u0C7F]/g,'');let result=source;const pairs=Object.keys(en).filter(key=>key!=='appName'&&typeof en[key]==='string'&&te[key]&&en[key]!==te[key]).map(key=>[en[key],te[key]]).sort((a,b)=>b[0].length-a[0].length);for(const [english,telugu] of pairs){const escaped=english.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');const matcher=new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`,'giu');result=result.replace(matcher,(_match,prefix)=>`${prefix}${telugu}`)}return result}
 function localizeRenderedUI(){const root=document.getElementById('app');document.documentElement.lang=state.language;document.documentElement.dataset.language=state.language;const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);const textNodes=[];while(walker.nextNode())textNodes.push(walker.currentNode);for(const node of textNodes){if(state.language==='te'&&/^[\s\u0C00-\u0C7F]+$/.test(node.nodeValue)&&node.parentElement?.closest('.role-te,small')){node.parentElement.closest('.role-te,small').remove();continue}node.nodeValue=localizeText(node.nodeValue)}for(const element of root.querySelectorAll('[placeholder],[aria-label],[title]')){for(const attribute of ['placeholder','aria-label','title'])if(element.hasAttribute(attribute))element.setAttribute(attribute,localizeText(element.getAttribute(attribute)))}root.querySelectorAll('[data-language]').forEach(button=>button.addEventListener('click',()=>setLanguage(button.dataset.language)))}
@@ -135,7 +180,20 @@ localizeRenderedUI=()=>{localizeRenderedUIOriginal();const root=document.getElem
 function setLanguage(language){state.language=language==='te'?'te':'en';localStorage.setItem('farmiqo-language',state.language);render()}
 function farmerOrderActions(order){const actions={ORDER_PLACED:[['FARMER_ACCEPTED','Accept'],['FARMER_REJECTED','Reject']],FARMER_ACCEPTED:[['PREPARING','Preparing']],PREPARING:[['READY_FOR_PICKUP','Ready for pickup'],['OUT_FOR_DELIVERY','Dispatch']],READY_FOR_PICKUP:[['DELIVERED','Mark delivered'],['OUT_FOR_DELIVERY','Dispatch']],OUT_FOR_DELIVERY:[['DELIVERED','Mark delivered']]};return (actions[order.rawStatus]||[]).map(([status,label])=>`<button class="btn ${status==='FARMER_REJECTED'?'danger':'primary'} small" type="button" onclick="updateFarmerOrder('${order.id}','${status}')">${label}</button>`).join('')}
 async function updateFarmerOrder(orderId,status){try{await updateOrderStatus(orderId,status);await refreshFarmerData();toast(status==='FARMER_ACCEPTED'?'Order accepted':'Order status updated')}catch(error){toast(error.message)}}
-const farmerOrderCard=(order)=>`<article class="card group-card"><div class="group-row"><div><div class="group-title">#${order.id}</div><div class="group-sub">${order.consumer||'Consumer'} · ${order.rawStatus.replaceAll('_',' ')}</div></div><span class="badge blue">${order.paymentMethod==='COD'?'COD · Pending':'UPI · Mock'}</span></div><div class="order-meta" style="margin-top:12px">${order.items}</div><div class="row" style="margin-top:14px"><strong class="price">${money(order.amount)}</strong><div class="inline-order-actions">${farmerOrderActions(order)}</div></div></article>`;
+const farmerOrderCard=(order)=>`<article class="card group-card"><div class="group-row"><div><div class="group-title">#${order.id}</div><div class="group-sub">${order.consumer||'Consumer'} · ${order.rawStatus.replaceAll('_',' ')}</div></div><span class="badge blue">${order.paymentMethod==='COD'?'COD · Pending':'UPI · Mock'}</span></div><div class="order-meta" style="margin-top:12px">${order.items}</div><div class="muted" style="font-size:12px;margin-top:8px">${order.addressText||''}</div>${order.hasCoords?`<div style="margin-top:10px"><div class="row"><button class="btn secondary" onclick="toggleOrderMap('${order.id}',${order.deliveryLat},${order.deliveryLng})">View map</button><a class="btn primary" href="${directionsUrl(order.deliveryLat,order.deliveryLng)}" target="_blank" rel="noopener">Get Directions</a></div><div id="ordermap-${order.id}" class="map-box small" style="display:none;margin-top:10px"></div></div>`:''}<div class="row" style="margin-top:14px"><strong class="price">${money(order.amount)}</strong><div class="inline-order-actions">${farmerOrderActions(order)}</div></div></article>`;
+function directionsUrl(lat, lng) { return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${lat},${lng}`)}`; }
+async function toggleOrderMap(orderId, lat, lng) {
+  const el = document.getElementById(`ordermap-${CSS.escape(orderId)}`);
+  if (!el) return;
+  if (el.style.display !== 'none') { el.style.display = 'none'; el.innerHTML = ''; return; }
+  el.style.display = 'block';
+  try {
+    const L = await loadLeaflet();
+    const map = L.map(el, { dragging: true, scrollWheelZoom: false }).setView([lat, lng], 15);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: OSM_ATTRIBUTION }).addTo(map);
+    L.marker([lat, lng], { icon: pinIcon(L) }).addTo(map);
+  } catch { el.innerHTML = '<div class="muted" style="font-size:12px">Map could not load.</div>'; }
+}
 const farmerOrdersList=()=>state.orders.length?`<div class="stack" style="margin-top:14px">${state.orders.map(farmerOrderCard).join('')}</div>`:`<div class="empty"><h3>No orders yet</h3><p>New consumer orders will appear here.</p></div>`;
 const farmerOrdersView=()=>`<div class="screen">${header('Bulk orders','Orders assigned to your farm')}<div class="container"><div class="section-title">Incoming orders</div><div style="margin-top:14px">${farmerOrdersList()}</div></div>${farmerNav()}</div>`;
 bulkOrders=farmerOrdersView;
@@ -157,7 +215,175 @@ function renderDecorativeIcons(){const root=document.getElementById('app');let m
 let deferredInstallPrompt=null;
 async function installApp(){if(!deferredInstallPrompt)return;const promptEvent=deferredInstallPrompt;deferredInstallPrompt=null;await promptEvent.prompt();const choice=await promptEvent.userChoice;toast(choice.outcome==='accepted'?en.installStarted:en.installDismissed);render()}
 function renderInstallControl(){if(!deferredInstallPrompt)return;const screen=document.querySelector('#app .screen');if(!screen)return;const button=document.createElement('button');button.className='install-app-btn';button.type='button';button.innerHTML=`${icon('Download',18)}<span>${dictionaries[state.language]?.installApp||en.installApp}</span>`;button.addEventListener('click',installApp);const anchor=screen.querySelector('.container')||screen.querySelector('.role-heading')||screen.querySelector('.hero-logo');anchor?.before(button)}
-render=()=>{renderUntranslated();document.querySelectorAll('#app img').forEach((image)=>{const src=image.getAttribute('src')||'';if(src.startsWith('/assets/https://')||src.startsWith('/assets/http://'))image.setAttribute('src',src.slice(8));else if(src==='/assets/icon.svg')image.setAttribute('src','/icon.svg')});renderDecorativeIcons();renderInstallControl();localizeRenderedUI()};
+render=()=>{renderUntranslated();document.querySelectorAll('#app img').forEach((image)=>{const src=image.getAttribute('src')||'';if(src.startsWith('/assets/https://')||src.startsWith('/assets/http://'))image.setAttribute('src',src.slice(8));else if(src==='/assets/icon.svg')image.setAttribute('src','/icon.svg')});renderDecorativeIcons();renderInstallControl();localizeRenderedUI();if(state.screen==='addressPicker')void initPickerMap().catch(()=>{})};
+function openAddressPicker(mode, editId = '', groupId = '') {
+  const existing = editId ? state.addresses.find((a) => a.id === editId) : null;
+  const center = defaultCenter();
+  if (existing) {
+    state.mapDraft = { lat: existing.lat, lng: existing.lng };
+    state.addrForm = { label: existing.label, house: existing.house, street: existing.street, area: existing.area, landmark: existing.landmark, pincode: existing.pincode, phone: existing.phone, editingId: existing.id };
+  } else if (mode === 'farm' && Number.isFinite(state.user?.farmLat) && Number.isFinite(state.user?.farmLng)) {
+    state.mapDraft = { lat: state.user.farmLat, lng: state.user.farmLng };
+    state.addrForm = { label: 'Home', house: '', street: '', area: '', landmark: '', pincode: state.user?.pincode || '', phone: state.user?.phone || '', editingId: '' };
+  } else {
+    state.mapDraft = { lat: center.lat, lng: center.lng };
+    state.addrForm = { label: 'Home', house: '', street: '', area: '', landmark: '', pincode: state.user?.pincode || '', phone: state.user?.phone || '', editingId: '' };
+  }
+  state.mapCtx = { mode, editId: existing ? existing.id : '', groupId };
+  state.screen = 'addressPicker';
+  render();
+}
+async function initPickerMap() {
+  const el = document.getElementById('farmiqo-map');
+  if (!el || !state.mapDraft) return;
+  try {
+    const L = await loadLeaflet();
+    destroyMap();
+    const draft = state.mapDraft;
+    activeMap = L.map(el, { zoomControl: true }).setView([draft.lat, draft.lng], 15);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: OSM_ATTRIBUTION }).addTo(activeMap);
+    activeMarker = L.marker([draft.lat, draft.lng], { draggable: true, icon: pinIcon(L) }).addTo(activeMap);
+    activeMarker.on('dragend', () => {
+      const pos = activeMarker.getLatLng();
+      state.mapDraft = { lat: Math.round(pos.lat * 1e6) / 1e6, lng: Math.round(pos.lng * 1e6) / 1e6 };
+      updateCoordsCaption();
+    });
+    activeMap.on('click', (e) => {
+      state.mapDraft = { lat: Math.round(e.latlng.lat * 1e6) / 1e6, lng: Math.round(e.latlng.lng * 1e6) / 1e6 };
+      activeMarker.setLatLng([state.mapDraft.lat, state.mapDraft.lng]);
+      updateCoordsCaption();
+    });
+    updateCoordsCaption();
+  } catch { toast('Map could not load. You can still type the address details below.'); }
+}
+function updateCoordsCaption() {
+  const el = document.getElementById('map-coords');
+  if (el && state.mapDraft) el.textContent = `${state.mapDraft.lat}, ${state.mapDraft.lng}`;
+}
+function addressPicker() {
+  const back = state.mapCtx?.mode === 'farm' ? 'profile' : (state.mapCtx?.mode === 'bulkJoin' ? 'bulkGroups' : (state.role === 'consumer' ? 'profile' : 'farmerHome'));
+  return `<div class="screen">${header('Choose on map', 'Move the pin to your exact spot', true)}<div class="container"><div class="search"><span class="ico">⌕</span><input id="map-search" class="input" placeholder="Search village, area, or pincode" oninput="pickerSearch(this.value)"></div><div id="map-results" style="margin-top:8px"></div><div class="row" style="margin:12px 0"><button class="btn secondary" onclick="useMyLocation()">Use my location</button><span id="map-coords" class="muted" style="font-size:12px"></span></div><div id="farmiqo-map" class="map-box"></div><div class="muted" style="font-size:11px;margin-top:6px">Map © OpenStreetMap contributors · Drag the pin or tap the map</div><button class="btn primary block" style="margin-top:14px" onclick="confirmPin()">Confirm this location</button><button class="auth-back" type="button" onclick="state.screen='${back}';render()">Cancel</button></div>${state.role === 'farmer' ? farmerNav() : consumerNav()}</div>`;
+}
+function addressForm() {
+  const f = state.addrForm;
+  return `<div class="screen">${header(f.editingId ? 'Edit address' : 'Address details', '', true)}<div class="container"><div class="card" style="padding:16px"><div class="muted" style="font-size:12px;margin-bottom:12px">Pinned at ${state.mapDraft ? `${state.mapDraft.lat}, ${state.mapDraft.lng}` : ''}${f.formattedGuess ? `<br>${escapeHtml(f.formattedGuess)}` : ''}</div><div class="chips" style="margin-bottom:12px">${['Home', 'College', 'Other'].map((l) => `<button class="chip ${f.label === l ? 'active' : ''}" onclick="state.addrForm.label='${l}';render()">${l}</button>`).join('')}</div><div class="form-grid"><div><label class="muted">House / building</label><input id="af-house" class="input" maxlength="120" value="${escapeHtml(f.house)}"></div><div><label class="muted">Street</label><input id="af-street" class="input" maxlength="160" value="${escapeHtml(f.street)}"></div><div><label class="muted">Village / area</label><input id="af-area" class="input" maxlength="160" value="${escapeHtml(f.area)}"></div><div><label class="muted">Landmark</label><input id="af-landmark" class="input" maxlength="160" value="${escapeHtml(f.landmark)}"></div><div><label class="muted">Pincode</label><input id="af-pincode" class="input" inputmode="numeric" maxlength="6" value="${escapeHtml(f.pincode)}"></div><div><label class="muted">Contact number</label><input id="af-phone" class="input" type="tel" maxlength="32" value="${escapeHtml(f.phone)}"></div></div><div id="addr-error" class="auth-error" role="alert"></div><button class="btn primary block" style="margin-top:14px" onclick="saveAddressUI()">Save address</button></div></div>${consumerNav()}</div>`;
+}
+async function saveAddressUI() {
+  const values = {
+    label: state.addrForm.label,
+    house: document.getElementById('af-house').value.trim(),
+    street: document.getElementById('af-street').value.trim(),
+    area: document.getElementById('af-area').value.trim(),
+    landmark: document.getElementById('af-landmark').value.trim(),
+    pincode: document.getElementById('af-pincode').value.trim(),
+    phone: document.getElementById('af-phone').value.trim() || state.user?.phone || '',
+    lat: state.mapDraft?.lat,
+    lng: state.mapDraft?.lng,
+    formattedAddress: state.addrForm.formattedGuess || '',
+  };
+  try {
+    const saved = state.addrForm.editingId
+      ? await updateAddress(state.addrForm.editingId, values)
+      : await createAddress(values);
+    await refreshAddresses();
+    state.selectedAddressId = saved.id;
+    localStorage.setItem('farmiqo-last-address', saved.id);
+    toast('Address saved');
+    if (state.mapCtx?.mode === 'bulkJoin' && state.mapCtx?.groupId) { state.bulkJoinAddr[state.mapCtx.groupId] = saved.id; }
+    state.screen = state.mapCtx?.mode === 'checkout' ? 'payment' : (state.mapCtx?.mode === 'bulkJoin' ? 'bulkGroups' : 'profile');
+    render();
+  } catch (error) { const t = document.getElementById('addr-error'); if (t) t.textContent = error.message; else toast(error.message); }
+}
+async function editAddressUI(id) { openAddressPicker('profile', id); }
+function addressBookCard() {
+  return `<div class="card" style="padding:16px;margin-top:14px"><div class="row"><h3 style="margin:0">My addresses</h3><button class="btn secondary" onclick="openAddressPicker('profile')">Add new</button></div><div class="stack" style="margin-top:12px">${state.addresses.length ? state.addresses.map((a) => `<div class="card" style="padding:12px"><div class="row"><div><b>${escapeHtml(a.label)}</b><div class="muted" style="font-size:12px">${escapeHtml(addressText(a))}</div></div><div style="display:flex;gap:8px"><button class="sm-btn edit" onclick="editAddressUI('${a.id}')">Edit</button><button class="sm-btn delete" onclick="removeAddressUI('${a.id}')">Delete</button></div></div></div>`).join('') : '<p class="muted">No saved addresses yet. Add one to speed up checkout.</p>'}</div></div>`;
+}
+function farmLocationCard() {
+  const user = state.user || {};
+  const has = Number.isFinite(user.farmLat) && Number.isFinite(user.farmLng);
+  return `<div class="card" style="padding:16px;margin-top:14px"><div class="row"><h3 style="margin:0">Farm location</h3><button class="btn secondary" onclick="openAddressPicker('farm')">${has ? 'Update' : 'Set on map'}</button></div>${has ? `<div class="muted" style="font-size:12px;margin-top:8px">${escapeHtml(user.farmAddress || `${user.farmLat}, ${user.farmLng}`)}</div>` : '<p class="muted">Not set. Pin your farm so you can find it easily.</p>'}</div></div>`;
+}
+async function removeAddressUI(id) {
+  if (!confirm('Delete this address?')) return;
+  try {
+    await deleteAddress(id);
+    if (state.selectedAddressId === id) state.selectedAddressId = '';
+    await refreshAddresses();
+    render();
+  } catch (error) { toast(error.message); }
+}
+let searchTimer = null;
+function pickerSearch(query) {
+  window.clearTimeout(searchTimer);
+  const box = document.getElementById('map-results');
+  if (!query || query.trim().length < 3) { if (box) box.innerHTML = ''; return; }
+  searchTimer = window.setTimeout(async () => {
+    try {
+      const places = await searchPlaces(query.trim());
+      const target = document.getElementById('map-results');
+      if (!target) return;
+      target.innerHTML = places.length
+        ? places.map((p, i) => `<button type="button" class="search-result" data-i="${i}">${escapeHtml(p.display_name)}</button>`).join('')
+        : '<div class="muted" style="font-size:12px">No matches. Try a village, area, or pincode.</div>';
+      target.querySelectorAll('.search-result').forEach((btn) => btn.addEventListener('click', () => {
+        const place = places[Number(btn.dataset.i)];
+        if (!place) return;
+        state.mapDraft = { lat: Number(place.lat), lng: Number(place.lon) };
+        if (activeMap && activeMarker) {
+          activeMap.setView([state.mapDraft.lat, state.mapDraft.lng], 16);
+          activeMarker.setLatLng([state.mapDraft.lat, state.mapDraft.lng]);
+        }
+        updateCoordsCaption();
+        target.innerHTML = '';
+      }));
+    } catch { const t = document.getElementById('map-results'); if (t) t.innerHTML = '<div class="muted" style="font-size:12px">Search is unavailable offline. Move the pin manually.</div>'; }
+  }, 500);
+}
+function useMyLocation() {
+  if (!('geolocation' in navigator)) { toast('Geolocation is not available on this device. Search or move the pin instead.'); return; }
+  toast('Locating…');
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      state.mapDraft = { lat: Math.round(pos.coords.latitude * 1e6) / 1e6, lng: Math.round(pos.coords.longitude * 1e6) / 1e6 };
+      if (activeMap && activeMarker) {
+        activeMap.setView([state.mapDraft.lat, state.mapDraft.lng], 16);
+        activeMarker.setLatLng([state.mapDraft.lat, state.mapDraft.lng]);
+      }
+      updateCoordsCaption();
+    },
+    () => toast('Location permission was denied. Search for your area or move the pin manually.'),
+    { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 },
+  );
+}
+async function confirmPin() {
+  if (!state.mapDraft) return;
+  const { lat, lng } = state.mapDraft;
+  if (state.mapCtx?.mode === 'farm') {
+    try {
+      let formatted = '';
+      try { formatted = (await reversePlace(lat, lng)).display_name || ''; } catch {}
+      const user = await updateProfile({ farmLat: lat, farmLng: lng, farmAddress: formatted.slice(0, 300) });
+      state.user = user;
+      localStorage.setItem('farmiqo-user', JSON.stringify(user));
+      toast('Farm location saved');
+    } catch (error) { toast(error.message); return; }
+    state.screen = 'profile';
+    render();
+    return;
+  }
+  try {
+    const place = await reversePlace(lat, lng);
+    const addr = place.address || {};
+    state.addrForm = {
+      ...state.addrForm,
+      area: addr.suburb || addr.village || addr.town || addr.city || state.addrForm.area,
+      pincode: addr.postcode && /^\d{6}$/.test(addr.postcode) ? addr.postcode : state.addrForm.pincode,
+    };
+    state.addrForm.formattedGuess = place.display_name || '';
+  } catch { state.addrForm.formattedGuess = ''; }
+  state.screen = 'addressForm';
+  render();
+}
 const originalRoleScreen=roleScreen;
 const languagePicker=()=>`<div class="language-picker" aria-label="${en.appLanguage}"><button class="chip ${state.language==='en'?'active':''}" data-language="en">${en.english}</button><button class="chip ${state.language==='te'?'active':''}" data-language="te">${te.telugu}</button></div>`;
 roleScreen=()=>state.screen==='forgot'?forgotScreen():state.screen==='reset'&&state.resetToken?resetScreen():state.screen==='auth'?authScreen().replace('<div class="hero-logo">',`${languagePicker()}<div class="hero-logo">`):originalRoleScreen().replace('<div class="role-foot">',`${languagePicker()}<div class="role-foot">`);
@@ -195,9 +421,9 @@ bulkOrders=()=>{
   const activeListings=state.listings.filter((item)=>item.status==='ACTIVE');
   const f=state.offerForm;
   const offerForm=`<div class="card" style="padding:16px;margin-bottom:14px"><h3 style="margin:0 0 12px">Create bulk offer</h3>${activeListings.length?`<div class="form-grid"><div class="full"><label class="muted">Listing</label><select id="offer-listing" class="input" oninput="state.offerForm.listingId=this.value">${activeListings.map((item)=>`<option value="${item.id}"${f.listingId===item.id?' selected':''}>${item.name} · ${item.qty} kg</option>`).join('')}</select></div><div><label class="muted">Target quantity (kg)</label><input id="offer-target" class="input" type="number" min="1" value="${escapeHtml(f.target)}" oninput="state.offerForm.target=this.value"></div><div><label class="muted">Min per person (kg)</label><input id="offer-min" class="input" type="number" min="0.01" step="0.5" value="${escapeHtml(f.min)}" oninput="state.offerForm.min=this.value"></div><div><label class="muted">Max per person (kg, optional)</label><input id="offer-max" class="input" type="number" min="0.01" step="0.5" value="${escapeHtml(f.max)}" oninput="state.offerForm.max=this.value"></div><div><label class="muted">Delivery date (optional)</label><input id="offer-slot" class="input" type="date" value="${escapeHtml(f.slot)}" oninput="state.offerForm.slot=this.value"></div><div class="full"><label class="muted">Delivery note (optional)</label><input id="offer-note" class="input" maxlength="300" value="${escapeHtml(f.note)}" oninput="state.offerForm.note=this.value"></div></div><button class="btn primary block" style="margin-top:14px" onclick="createBulkOfferUI()">Publish offer</button>`:'<p class="muted">Create a produce listing first.</p>'}</div>`;
-  const offers=state.bulkOffers.length?`<div class="stack">${state.bulkOffers.map((g)=>{const pct=Math.min(100,Math.round(g.collectedQuantity/g.targetQuantity*100));return `<article class="card group-card"><div class="group-row"><div><div class="group-title">${escapeHtml(g.productName)}</div><div class="group-sub">${escapeHtml(g.status.replaceAll('_',' '))} · ${g.participantCount} participants</div></div><span class="badge ${g.status==='OPEN'?'':'blue'}">${escapeHtml(g.status)}</span></div><div style="font-size:13px;font-weight:900;margin-top:14px">${g.collectedQuantity}/${g.targetQuantity} kg pooled</div><div class="progress"><span style="width:${pct}%"></span></div>${g.deliveryInfo?`<div class="muted" style="font-size:12px;margin-top:8px">${escapeHtml(g.deliveryInfo)}</div>`:''}<div class="muted" style="font-size:12px;margin-top:4px">Delivery · cash on delivery</div>${g.assignedFarmerName?`<div class="muted" style="font-size:12px;margin-top:4px">Supplied by ${escapeHtml(g.assignedFarmerName)}</div>`:''}<div class="muted" style="font-size:12px;margin-top:8px">${g.participants.map((p)=>`${escapeHtml(p.consumerName)} · ${p.quantity}kg`).join(' · ')||'No participants yet'}</div>${['OPEN','TARGET_REACHED','ASSIGNED','AGGREGATED'].includes(g.status)?`<div class="row" style="margin-top:14px"><div style="display:flex;gap:8px;flex-wrap:wrap">${['TARGET_REACHED','ASSIGNED','AGGREGATED'].includes(g.status)?`<button class="btn primary" onclick="fulfilBulkGroupUI('${g.groupId}')">Confirm delivery orders</button>`:''}${g.assignedFarmerId&&g.assignedFarmerId===state.user?.id&&g.farmerId!==state.user?.id?`<button class="btn secondary" onclick="unassignBulkGroupUI('${g.groupId}')">Release</button>`:''}<button class="btn danger" onclick="cancelBulkGroupUI('${g.groupId}')">Cancel offer</button></div></div>`:''}</article>`}).join('')}</div>`:'<div class="card" style="padding:18px">No bulk offers yet. Use the form on this screen to create your first bulk offer.</div>';
+  const offers=state.bulkOffers.length?`<div class="stack">${state.bulkOffers.map((g)=>{const pct=Math.min(100,Math.round(g.collectedQuantity/g.targetQuantity*100));return `<article class="card group-card"><div class="group-row"><div><div class="group-title">${escapeHtml(g.productName)}</div><div class="group-sub">${escapeHtml(g.status.replaceAll('_',' '))} · ${g.participantCount} participants</div></div><span class="badge ${g.status==='OPEN'?'':'blue'}">${escapeHtml(g.status)}</span></div><div style="font-size:13px;font-weight:900;margin-top:14px">${g.collectedQuantity}/${g.targetQuantity} kg pooled</div><div class="progress"><span style="width:${pct}%"></span></div>${g.deliveryInfo?`<div class="muted" style="font-size:12px;margin-top:8px">${escapeHtml(g.deliveryInfo)}</div>`:''}<div class="muted" style="font-size:12px;margin-top:4px">Delivery · cash on delivery</div>${g.assignedFarmerName?`<div class="muted" style="font-size:12px;margin-top:4px">Supplied by ${escapeHtml(g.assignedFarmerName)}</div>`:''}<div class="muted" style="font-size:12px;margin-top:8px">${g.participants.map((p)=>`${escapeHtml(p.consumerName)} · ${p.quantity}kg${p.address?` · ${escapeHtml([p.address, p.pincode].filter(Boolean).join(' · '))}`:''}`).join('<br>')||'No participants yet'}</div>${['OPEN','TARGET_REACHED','ASSIGNED','AGGREGATED'].includes(g.status)?`<div class="row" style="margin-top:14px"><div style="display:flex;gap:8px;flex-wrap:wrap">${['TARGET_REACHED','ASSIGNED','AGGREGATED'].includes(g.status)?`<button class="btn primary" onclick="fulfilBulkGroupUI('${g.groupId}')">Confirm delivery orders</button>`:''}${g.assignedFarmerId&&g.assignedFarmerId===state.user?.id&&g.farmerId!==state.user?.id?`<button class="btn secondary" onclick="unassignBulkGroupUI('${g.groupId}')">Release</button>`:''}<button class="btn danger" onclick="cancelBulkGroupUI('${g.groupId}')">Cancel offer</button></div></div>`:''}</article>`}).join('')}</div>`:'<div class="card" style="padding:18px">No bulk offers yet. Use the form on this screen to create your first bulk offer.</div>';
   const requests=state.communityRequests.length?`<div class="stack">${state.communityRequests.map((g)=>{const pct=Math.min(100,Math.round(g.collectedQuantity/g.targetQuantity*100));return `<article class="card group-card"><div class="group-row"><div><div class="group-title">${escapeHtml(g.productName)}</div><div class="group-sub">${g.collectedQuantity}/${g.targetQuantity} kg pooled · ${g.participantCount} participants</div></div><span class="badge">${escapeHtml(g.status)}</span></div><div class="progress" style="margin-top:12px"><span style="width:${pct}%"></span></div><div class="muted" style="font-size:12px;margin-top:8px">Delivery · ${escapeHtml(g.pincode||'')}</div><div class="row" style="margin-top:14px"><button class="btn primary" onclick="assignBulkGroupUI('${g.groupId}')">Supply this group</button></div></article>`}).join('')}</div>`:'<div class="card" style="padding:18px">No open community requests right now.</div>';
-  return `<div class="screen">${header('Bulk orders','Offers and orders for your farm')}<div class="container"><div class="section-title">My bulk offers</div><div style="margin-top:12px">${offerForm}</div><div style="margin:18px 0 12px">${offers}</div><div class="section-title" style="margin-top:22px">Community requests</div><p class="muted">Open community groups you can supply. You need a matching active listing with enough stock.</p><div style="margin-top:12px">${requests}</div><div class="section-title" style="margin-top:22px">Community requests</div><p class="muted">Open community groups you can supply. You need a matching active listing with enough stock.</p><div style="margin-top:12px">${requests}</div><div class="section-title" style="margin-top:22px">Incoming orders</div><div style="margin-top:12px">${farmerOrdersList()}</div></div>${farmerNav()}</div>`;
+  return `<div class="screen">${header('Bulk orders','Offers and orders for your farm')}<div class="container"><div class="section-title">My bulk offers</div><div style="margin-top:12px">${offerForm}</div><div style="margin:18px 0 12px">${offers}</div><div class="section-title" style="margin-top:22px">Community requests</div><p class="muted">Open community groups you can supply. You need a matching active listing with enough stock.</p><div style="margin-top:12px">${requests}</div><div class="section-title" style="margin-top:22px">Incoming orders</div><div style="margin-top:12px">${farmerOrdersList()}</div></div>${farmerNav()}</div>`;
 };
 bulkGroups=()=>{
   const mine=(id)=>state.bulkGroups.find((g)=>g.groupId===id)?.participants.some((p)=>p.consumerId===state.user?.id);
@@ -206,7 +432,7 @@ bulkGroups=()=>{
   const gf=state.groupForm;
   const groupForm=`<div class="card" style="padding:16px;margin-top:14px"><h3 style="margin:0 0 12px">Start a community group</h3><div class="form-grid"><div class="full"><label class="muted">Produce name</label><input id="cg-product" class="input" maxlength="120" value="${escapeHtml(gf.product)}" oninput="state.groupForm.product=this.value"></div><div><label class="muted">Target quantity (kg)</label><input id="cg-target" class="input" type="number" min="1" value="${escapeHtml(gf.target)}" oninput="state.groupForm.target=this.value"></div><div><label class="muted">Min per person (kg)</label><input id="cg-min" class="input" type="number" min="0.01" step="0.5" value="${escapeHtml(gf.min)}" oninput="state.groupForm.min=this.value"></div><div><label class="muted">Max per person (optional)</label><input id="cg-max" class="input" type="number" min="0.01" step="0.5" value="${escapeHtml(gf.max)}" oninput="state.groupForm.max=this.value"></div><div><label class="muted">Pincode (optional)</label><input id="cg-pin" class="input" inputmode="numeric" maxlength="6" value="${escapeHtml(gf.pincode)}" oninput="state.groupForm.pincode=this.value"></div><div class="full"><label class="muted">Delivery note (optional)</label><input id="cg-info" class="input" maxlength="300" value="${escapeHtml(gf.info)}" oninput="state.groupForm.info=this.value"></div></div><button class="btn primary block" style="margin-top:14px" onclick="createCommunityUI()">Create group</button></div>`;
   const filterChips=`<div class="chips" style="margin:12px 0 4px">${['All','Open','Joined'].map((f)=>`<button class="chip ${state.groupFilter===f?'active':''}" onclick="state.groupFilter='${f}';render()">${f}</button>`).join('')}</div>`;
-  return `<div class="screen">${header('Bulk groups','Communities near you')}<div class="container"><div class="forecast-banner"><div style="font-weight:900;color:#7b651f">◉ Pool demand. Pay less.</div><div class="desc">Orders aggregate when the target quantity is reached. Delivery and cash on delivery are arranged per group.</div></div>${filterChips}<div class="stack" style="margin-top:14px">${visible.length?visible.map((g)=>{const pct=Math.min(100,Math.round(g.collectedQuantity/g.targetQuantity*100));const joined=mine(g.groupId);return `<article class="card group-card"><div class="group-row"><div><div class="group-title">${escapeHtml(g.productName)}</div><div class="group-sub">${escapeHtml(g.assignedFarmerName||(g.model==='offer'?g.farmerName:''))||'Awaiting farmer'}${g.priceAtOffer!=null?` · ${money(g.priceAtOffer)}/kg`:''}</div></div><span class="badge ${g.status==='OPEN'?'':'blue'}">${escapeHtml(g.status)}</span></div><div style="font-size:13px;font-weight:900;margin-top:14px">${g.collectedQuantity}/${g.targetQuantity} kg pooled · ${g.participantCount} participants</div><div class="progress"><span style="width:${pct}%"></span></div>${g.pickupNote?`<div class="muted" style="font-size:12px;margin-top:8px">${escapeHtml(g.pickupNote)}</div>`:''}<div class="muted" style="font-size:12px;margin-top:4px">Min ${g.minPerParticipant}kg${g.maxPerParticipant?` · max ${g.maxPerParticipant}kg`:''} per person</div><div class="muted" style="font-size:12px;margin-top:4px">Delivery · cash on delivery</div>${g.deliveryInfo?`<div class="muted" style="font-size:12px;margin-top:4px">${escapeHtml(g.deliveryInfo)}</div>`:''}${g.assignedFarmerName?`<div class="muted" style="font-size:12px;margin-top:4px">Supplied by ${escapeHtml(g.assignedFarmerName)}</div>`:`<div class="muted" style="font-size:12px;margin-top:4px">Awaiting farmer</div>`}${g.assignmentHistory?.length?`<div class="muted" style="font-size:12px;margin-top:4px">Assignment history: ${g.assignmentHistory.length}</div>`:''}<div class="row" style="margin-top:14px">${g.status==='OPEN'?(joined?`<span class="badge blue">Joined</span><button class="btn secondary" onclick="leaveBulkGroupUI('${g.groupId}')">Leave group</button>`:`<div><div style="display:flex;gap:8px;align-items:center"><input id="join-${g.groupId}" class="input" type="number" min="${g.minPerParticipant}" step="0.5" value="${g.minPerParticipant}" style="width:110px"><button class="btn primary" onclick="joinBulkGroupUI('${g.groupId}')">Join</button></div><div class="form-grid" style="margin-top:8px"><div class="full"><input id="join-addr-${g.groupId}" class="input" placeholder="Delivery address" maxlength="300"></div><div><input id="join-pin-${g.groupId}" class="input" placeholder="Delivery pincode" inputmode="numeric" maxlength="6"></div></div></div>`):`<span class="badge blue">${escapeHtml(g.status)}</span>`}</div></article>`}).join(''):'<div class="card" style="padding:18px">No bulk groups yet. Farmers publish bulk offers here. Check back soon.</div>'}</div>${groupForm}</div>${consumerNav()}</div>`;
+  return `<div class="screen">${header('Bulk groups','Communities near you')}<div class="container"><div class="forecast-banner"><div style="font-weight:900;color:#7b651f">◉ Pool demand. Pay less.</div><div class="desc">Orders aggregate when the target quantity is reached. Delivery and cash on delivery are arranged per group.</div></div>${filterChips}<div class="stack" style="margin-top:14px">${visible.length?visible.map((g)=>{const pct=Math.min(100,Math.round(g.collectedQuantity/g.targetQuantity*100));const joined=mine(g.groupId);return `<article class="card group-card"><div class="group-row"><div><div class="group-title">${escapeHtml(g.productName)}</div><div class="group-sub">${escapeHtml(g.assignedFarmerName||(g.model==='offer'?g.farmerName:''))||'Awaiting farmer'}${g.priceAtOffer!=null?` · ${money(g.priceAtOffer)}/kg`:''}</div></div><span class="badge ${g.status==='OPEN'?'':'blue'}">${escapeHtml(g.status)}</span></div><div style="font-size:13px;font-weight:900;margin-top:14px">${g.collectedQuantity}/${g.targetQuantity} kg pooled · ${g.participantCount} participants</div><div class="progress"><span style="width:${pct}%"></span></div>${g.pickupNote?`<div class="muted" style="font-size:12px;margin-top:8px">${escapeHtml(g.pickupNote)}</div>`:''}<div class="muted" style="font-size:12px;margin-top:4px">Min ${g.minPerParticipant}kg${g.maxPerParticipant?` · max ${g.maxPerParticipant}kg`:''} per person</div><div class="muted" style="font-size:12px;margin-top:4px">Delivery · cash on delivery</div>${g.deliveryInfo?`<div class="muted" style="font-size:12px;margin-top:4px">${escapeHtml(g.deliveryInfo)}</div>`:''}${g.assignedFarmerName?`<div class="muted" style="font-size:12px;margin-top:4px">Supplied by ${escapeHtml(g.assignedFarmerName)}</div>`:`<div class="muted" style="font-size:12px;margin-top:4px">Awaiting farmer</div>`}${g.assignmentHistory?.length?`<div class="muted" style="font-size:12px;margin-top:4px">Assignment history: ${g.assignmentHistory.length}</div>`:''}<div class="row" style="margin-top:14px">${g.status==='OPEN'?(joined?`<span class="badge blue">Joined</span><button class="btn secondary" onclick="leaveBulkGroupUI('${g.groupId}')">Leave group</button>`:`<div><div style="display:flex;gap:8px;align-items:center"><input id="join-${g.groupId}" class="input" type="number" min="${g.minPerParticipant}" step="0.5" value="${g.minPerParticipant}" style="width:110px"><button class="btn primary" onclick="joinBulkGroupUI('${g.groupId}')">Join</button></div>${state.addresses.length?`<select id="join-which-${g.groupId}" class="input" style="margin-top:8px" onchange="state.bulkJoinAddr['${g.groupId}']=this.value">${state.addresses.map((a)=>`<option value="${a.id}"${bulkJoinAddressId(g.groupId)===a.id?' selected':''}>${escapeHtml(a.label)} · ${escapeHtml(addressText(a))}</option>`).join('')}</select><button class="btn secondary" style="margin-top:8px" onclick="openAddressPicker('bulkJoin','','${g.groupId}')">New address on map</button>`:`<button class="btn secondary" style="margin-top:8px" onclick="openAddressPicker('bulkJoin','','${g.groupId}')">Add delivery address on map</button>`}</div>`):`<span class="badge blue">${escapeHtml(g.status)}</span>`}</div></article>`}).join(''):'<div class="card" style="padding:18px">No bulk groups yet. Farmers publish bulk offers here. Check back soon.</div>'}</div>${groupForm}</div>${consumerNav()}</div>`;
 };
 forecast=()=>{
   const data=state.forecast;
@@ -219,16 +445,18 @@ profile=()=>{
  const phone=escapeHtml(user.phone||'Not provided');
  const location=escapeHtml([user.location,user.pincode].filter(Boolean).join(' · ')||'Not provided');
  const initials=escapeHtml((user.name||'').split(/\s+/).map((part)=>part[0]||'').join('').slice(0,2).toUpperCase());
-  return `<div class="screen">${header('Profile',user.role==='FARMER'?'Farmer account':'Consumer account')}<div class="container"><div class="card" style="padding:18px;background:var(--green);color:#fff"><div class="row"><div><div style="font-size:21px;font-weight:950">${name}</div><div style="margin-top:3px;opacity:.9">${phone}</div><div style="margin-top:6px">${location}</div></div><div style="width:64px;height:64px;border-radius:50%;background:#fff3c9;color:var(--green);display:grid;place-items:center;font-weight:950;font-size:20px">${initials}</div></div></div><div class="card" style="padding:16px;margin-top:14px"><h3 style="margin:0 0 12px">Edit profile</h3><div class="form-grid"><div class="full"><label class="muted">Full name</label><input id="p-name" class="input" maxlength="100" value="${escapeHtml(user.name||'')}"></div><div><label class="muted">Phone</label><input id="p-phone" class="input" type="tel" maxlength="32" value="${escapeHtml(user.phone||'')}"></div><div><label class="muted">Pincode</label><input id="p-pincode" class="input" inputmode="numeric" maxlength="6" value="${escapeHtml(user.pincode||'')}"></div><div class="full"><label class="muted">${user.role==='FARMER'?'Farm name':'Delivery location'}</label><input id="p-extra" class="input" maxlength="160" value="${escapeHtml(user.role==='FARMER'?(user.farmName||''):user.location||'')}"></div></div><div id="profile-error" class="auth-error" role="alert"></div><button class="btn primary block" style="margin-top:14px" onclick="updateProfileUI()">Save changes</button></div><div class="card" style="padding:15px;margin-top:14px"><b>App language</b><div class="chips" style="margin-top:10px"><button class="chip ${state.language==='en'?'active':''}" data-language="en">${en.english}</button><button class="chip ${state.language==='te'?'active':''}" data-language="te">${te.telugu}</button></div></div><button class="btn secondary block" style="margin-top:14px" onclick="logout()">Sign out</button><button class="btn danger block" style="margin-top:10px" onclick="deleteAccountUI()">Delete account</button></div>${state.role==='farmer'?farmerNav():consumerNav()}</div>`;
+  return `<div class="screen">${header('Profile',user.role==='FARMER'?'Farmer account':'Consumer account')}<div class="container"><div class="card" style="padding:18px;background:var(--green);color:#fff"><div class="row"><div><div style="font-size:21px;font-weight:950">${name}</div><div style="margin-top:3px;opacity:.9">${phone}</div><div style="margin-top:6px">${location}</div></div><div style="width:64px;height:64px;border-radius:50%;background:#fff3c9;color:var(--green);display:grid;place-items:center;font-weight:950;font-size:20px">${initials}</div></div></div><div class="card" style="padding:16px;margin-top:14px"><h3 style="margin:0 0 12px">Edit profile</h3><div class="form-grid"><div class="full"><label class="muted">Full name</label><input id="p-name" class="input" maxlength="100" value="${escapeHtml(user.name||'')}"></div><div><label class="muted">Phone</label><input id="p-phone" class="input" type="tel" maxlength="32" value="${escapeHtml(user.phone||'')}"></div><div><label class="muted">Pincode</label><input id="p-pincode" class="input" inputmode="numeric" maxlength="6" value="${escapeHtml(user.pincode||'')}"></div><div class="full"><label class="muted">${user.role==='FARMER'?'Farm name':'Delivery location'}</label><input id="p-extra" class="input" maxlength="160" value="${escapeHtml(user.role==='FARMER'?(user.farmName||''):user.location||'')}"></div></div><div id="profile-error" class="auth-error" role="alert"></div><button class="btn primary block" style="margin-top:14px" onclick="updateProfileUI()">Save changes</button></div>${state.role === 'consumer' ? addressBookCard() : farmLocationCard()}<div class="card" style="padding:15px;margin-top:14px"><b>App language</b><div class="chips" style="margin-top:10px"><button class="chip ${state.language==='en'?'active':''}" data-language="en">${en.english}</button><button class="chip ${state.language==='te'?'active':''}" data-language="te">${te.telugu}</button></div></div><button class="btn secondary block" style="margin-top:14px" onclick="logout()">Sign out</button><button class="btn danger block" style="margin-top:10px" onclick="deleteAccountUI()">Delete account</button></div>${state.role==='farmer'?farmerNav():consumerNav()}</div>`;
 };
 payment=()=>{
- state.checkoutPincode ||= state.user?.pincode||'';
  const items=cartItems();
- const subtotal=items.reduce((sum,item)=>sum+item.p.price*item.qty,0);
- return `<div class="screen">${header('Checkout','Payment is simulated',true)}<div class="container"><div class="card" style="padding:14px"><h2>Delivery details</h2><label class="auth-field">Delivery address<textarea id="checkout-address" class="input" maxlength="300" required oninput="state.checkoutAddress=this.value">${escapeHtml(state.checkoutAddress)}</textarea></label><label class="auth-field">Delivery pincode<input id="checkout-pincode" class="input" inputmode="numeric" maxlength="6" value="${escapeHtml(state.checkoutPincode)}" oninput="state.checkoutPincode=this.value"></label></div><h3>Items</h3><div class="stack">${items.map((item)=>`<div class="row"><span>${item.p.name} · ${item.qty} kg</span><b>${money(item.p.price*item.qty)}</b></div>`).join('')}</div><div class="card" style="padding:14px;margin-top:14px"><div class="row"><b>Subtotal</b><b>${money(subtotal)}</b></div><p class="muted">Any configured delivery fee is included in the confirmed order total.</p></div><h3 style="margin:18px 0 12px">Choose payment method</h3><div class="grid2"><button class="btn ${state.payMethod==='UPI'?'primary':'secondary'}" onclick="state.payMethod='UPI';render()">UPI (simulation)</button><button class="btn ${state.payMethod==='POD'?'primary':'secondary'}" onclick="state.payMethod='POD';render()">Cash on delivery</button></div><p class="muted">UPI does not charge or transfer money. No payment provider is connected.</p><button class="btn primary block" style="margin-top:16px" onclick="payNow()">Place order</button></div></div>`;
+ const subtotal=Math.round(items.reduce((sum,item)=>sum+item.p.price*item.qty,0)*100)/100;
+ const fee=Math.round(subtotal*state.feePercent)/100;
+ const total=Math.round((subtotal+fee)*100)/100;
+ const selected=state.addresses.find((a)=>a.id===state.selectedAddressId);
+ return `<div class="screen">${header('Checkout','Payment is simulated',true)}<div class="container"><div class="card" style="padding:14px"><h2>Delivery address</h2>${state.addresses.length?`<div class="stack">${state.addresses.map((a)=>`<label class="addr-row"><input type="radio" name="checkout-addr" ${a.id===state.selectedAddressId?'checked':''} onchange="state.selectedAddressId='${a.id}';render()"><div><b>${escapeHtml(a.label)}</b><div class="muted" style="font-size:12px">${escapeHtml(addressText(a))}</div></div></label>`).join('')}</div>`:'<p class="muted">No saved addresses yet.</p>'}<button class="btn secondary block" style="margin-top:12px" onclick="openAddressPicker('checkout')">Add new address on map</button>${selected?`<div class="muted" style="font-size:12px;margin-top:8px">Delivering to: ${escapeHtml(addressText(selected))}</div>`:''}</div><h3>Items</h3><div class="stack">${items.map((item)=>`<div class="row"><span>${item.p.name} · ${item.qty} kg</span><b>${money(item.p.price*item.qty)}</b></div>`).join('')}</div><div class="card" style="padding:14px;margin-top:14px"><div class="row"><b>Subtotal</b><b>${money(subtotal)}</b></div><div class="summary-line"><span>Delivery fee (${state.feePercent}%)</span><b>${money(fee)}</b></div><div class="summary-line total"><span>Total payable</span><b style="color:var(--green)">${money(total)}</b></div><p class="muted">Farmiqo delivery fee · final total is confirmed by the server when you place the order.</p></div><h3 style="margin:18px 0 12px">Choose payment method</h3><div class="grid2"><button class="btn ${state.payMethod==='UPI'?'primary':'secondary'}" onclick="state.payMethod='UPI';render()">UPI (simulation)</button><button class="btn ${state.payMethod==='POD'?'primary':'secondary'}" onclick="state.payMethod='POD';render()">Cash on delivery</button></div><p class="muted">UPI does not charge or transfer money. No payment provider is connected.</p><button class="btn primary block" style="margin-top:16px" onclick="payNow()">Place order · ${money(total)}</button></div></div>`;
 };
 joinGroup=()=>toast('Bulk groups are not available yet.');
-async function joinBulkGroupUI(groupId){const qty=Number(document.getElementById(`join-${CSS.escape(groupId)}`)?.value);if(!Number.isFinite(qty)||qty<=0){toast('Enter a quantity in kg');return}const addr=document.getElementById(`join-addr-${CSS.escape(groupId)}`);const pin=document.getElementById(`join-pin-${CSS.escape(groupId)}`);try{await joinBulkGroup(groupId,qty,addr?addr.value.trim():undefined,pin?pin.value.trim():undefined);toast('Joined group');await refreshBulkGroups()}catch(error){toast(error.message)}}
+async function joinBulkGroupUI(groupId){const qty=Number(document.getElementById(`join-${CSS.escape(groupId)}`)?.value);if(!Number.isFinite(qty)||qty<=0){toast('Enter a quantity in kg');return}const which=document.getElementById(`join-which-${CSS.escape(groupId)}`);const addressId=which?which.value:(state.bulkJoinAddr?.[groupId]||'');if(!addressId){toast('Choose a delivery address or add one on the map');return}try{await joinBulkGroup(groupId,qty,undefined,undefined,addressId);toast('Joined group');await refreshBulkGroups()}catch(error){toast(error.message)}}
 async function leaveBulkGroupUI(groupId){try{await leaveBulkGroup(groupId);toast('You left the group');await refreshBulkGroups()}catch(error){toast(error.message)}}
 async function createBulkOfferUI(){const f=state.offerForm;const listingId=f.listingId||state.listings.find((item)=>item.status==='ACTIVE')?.id;if(!listingId){toast('Create a produce listing first');return}try{await createBulkGroup({listingId,targetQuantity:Number(f.target),minPerParticipant:f.min===''?undefined:Number(f.min),maxPerParticipant:f.max===''?undefined:Number(f.max),slotDate:f.slot||undefined,pickupNote:f.note});state.offerForm={listingId:'',target:'',min:'',max:'',note:'',slot:''};toast('Bulk offer published');await refreshFarmerOffers();render()}catch(error){toast(error.message)}}
 async function cancelBulkGroupUI(groupId){if(!confirm('Cancel this bulk offer?'))return;try{await cancelBulkGroup(groupId);toast('Bulk offer cancelled');await refreshFarmerOffers()}catch(error){toast(error.message)}}
@@ -242,11 +470,9 @@ function forgotScreen(){return `<div class="screen role-screen"><div class="hero
 function resetScreen(){return `<div class="screen role-screen"><div class="hero-logo"><img class="brand-symbol" src="/icon.svg" alt=""><div class="brand-copy"><div class="word">Farmiqo</div><div class="tag">Farmer to Consumer</div></div></div><div class="card auth-card"><h1>Set a new password</h1><form onsubmit="submitReset(event)"><label class="auth-field">New password (8+ characters)<input id="reset-password" class="input" type="password" minlength="8" autocomplete="new-password" required></label><div id="reset-error" class="auth-error" role="alert"></div><button class="btn primary block" type="submit">Update password</button></form><button class="auth-back" type="button" onclick="state.screen='auth';render()">Back to sign in</button></div></div>`}
 payNow=async()=>{
  if(!cartItems().length){toast('Your cart is empty');return}
- state.checkoutAddress=document.getElementById('checkout-address')?.value.trim()||'';
- state.checkoutPincode=document.getElementById('checkout-pincode')?.value.trim()||'';
- if(!state.checkoutAddress||!/^\d{6}$/.test(state.checkoutPincode)){toast('Enter a delivery address and 6-digit pincode');return}
+ if(!state.selectedAddressId){toast('Choose a delivery address');return}
  try{
-  const order=await createOrder({paymentMethod:state.payMethod==='POD'?'COD':'UPI_MOCK',fulfillment:'DELIVERY',address:state.checkoutAddress,pincode:state.checkoutPincode});
+  const order=await createOrder({paymentMethod:state.payMethod==='POD'?'COD':'UPI_MOCK',fulfillment:'DELIVERY',addressId:state.selectedAddressId});
   state.cart={};
   state.orders.unshift({id:order.orderId,status:order.status,items:order.items.map((item)=>`${escapeHtml(item.productName)} ${item.quantity}kg · ${escapeHtml(item.farmerName)}`).join(' · '),amount:order.total,paymentMethod:order.paymentMethod,paymentStatus:order.paymentStatus,raw:order});
   state.screen='orders';
@@ -268,6 +494,10 @@ refreshFarmerData=async()=>{
    id:order.orderId,
    status:subOrder.status,
    rawStatus:subOrder.status,
+   addressText:[order.address, order.pincode].filter(Boolean).join(' · '),
+   deliveryLat:Number.isFinite(Number(order.deliveryLat))?Number(order.deliveryLat):null,
+   deliveryLng:Number.isFinite(Number(order.deliveryLng))?Number(order.deliveryLng):null,
+   hasCoords:Number.isFinite(Number(order.deliveryLat))&&Number.isFinite(Number(order.deliveryLng)),
    items:subOrder.itemIndexes.map((index)=>{const item=order.items[index];return item?`${escapeHtml(item.productName)} ${item.quantity}kg`:''}).filter(Boolean).join(' · '),
    amount:subOrder.itemIndexes.reduce((sum,index)=>sum+(order.items[index]?.subtotal||0),0),
    consumer:escapeHtml(order.consumerName||'Consumer'),
@@ -322,7 +552,9 @@ async function restoreSession(){
   localStorage.setItem('farmiqo-user',JSON.stringify(user));
   connectRealtime(handleRealtimeEvent);
   render();
+  await refreshFeeConfig();
   await (state.role==='farmer'?refreshFarmerData():refreshMarketplace());
+  await refreshAddresses();
  }catch(error){
   if(error.status===401){
    clearSession();
@@ -333,9 +565,10 @@ async function restoreSession(){
   }else toast(error.message);
  }
 }
-Object.assign(window,{state,render,setScreen,setRole,submitAuth,submitForgot,submitReset,toggleAuthMode,setLanguage,goBack,openProfile,openAddProduce,closeModal,addListing,editListing,deleteListing,deleteAccountUI,updateProfileUI,adjustTomato,addToCart,changeQty,removeFromCart,joinGroup,joinBulkGroupUI,leaveBulkGroupUI,createBulkOfferUI,createCommunityUI,assignBulkGroupUI,unassignBulkGroupUI,cancelBulkGroupUI,fulfilBulkGroupUI,uploadPhotoUI,payNow,reorder,switchRole,logout});
+Object.assign(window,{state,render,setScreen,setRole,submitAuth,submitForgot,submitReset,toggleAuthMode,setLanguage,goBack,openProfile,openAddProduce,closeModal,addListing,editListing,deleteListing,deleteAccountUI,updateProfileUI,adjustTomato,addToCart,changeQty,removeFromCart,joinGroup,joinBulkGroupUI,leaveBulkGroupUI,createBulkOfferUI,createCommunityUI,assignBulkGroupUI,unassignBulkGroupUI,cancelBulkGroupUI,fulfilBulkGroupUI,uploadPhotoUI,payNow,reorder,switchRole,logout,openAddressPicker,saveAddressUI,editAddressUI,removeAddressUI,pickerSearch,useMyLocation,confirmPin,toggleOrderMap,directionsUrl});
 render();
 checkResetHash();
+void refreshFeeConfig();
 if(isAuthenticated())void restoreSession();
 if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(error=>console.warn('Service worker registration failed',error)));
 window.addEventListener('beforeinstallprompt',event=>{event.preventDefault();deferredInstallPrompt=event;render()});

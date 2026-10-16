@@ -32,16 +32,24 @@ Without a database, all `/api/*` except static handling return `503 DATABASE_UNA
 
 ## Orders
 
-- `POST /api/orders` (consumer) — `{paymentMethod: COD|UPI_MOCK, fulfillment: DELIVERY|PICKUP, address*, pincode*, items? (default: cart)}`. Transactional: conditional stock decrement per line, price snapshot, per-farmer sub-orders, order-id collision retry, cart cleared, farmer notifications, `listing:stockUpdated` + `order:created` events. `400 EMPTY_CART|INVALID_*`, `409 INSUFFICIENT_STOCK`.
+- `POST /api/orders` (consumer) — `{paymentMethod: COD|UPI_MOCK, addressId? | address*+pincode*, items? (default: cart)}`. All orders are `DELIVERY` (`fulfillment: PICKUP` is rejected with `400 INVALID_FULFILLMENT`; previously stored `PICKUP` rows remain readable and keep their state machine). A saved `addressId` snapshots that address (text, pincode, label, coordinates) into the order; otherwise a manual address+pincode is validated. Transactional: conditional stock decrement per line, price snapshot, per-farmer sub-orders, server-computed 5% delivery fee (rounded to paise), order-id collision retry, cart cleared, farmer notifications, `listing:stockUpdated` + `order:created` events. `400 EMPTY_CART|INVALID_*`, `404 ADDRESS_NOT_FOUND`, `409 INSUFFICIENT_STOCK`. Client-submitted totals/fees are ignored.
 - `GET /api/orders` (consumer) — own history, newest-first.
 - `GET /api/orders/:id` — owner consumer or assigned farmer only (`403` otherwise).
 - `GET /api/farmer/orders` (farmer) — orders containing own sub-order, with `{order, subOrder}` pairs.
+- `GET /api/farmer/bulk/groups` (farmer) — own-created and assigned bulk groups with full participant delivery details (address, pincode, coordinates). Public group views expose names/quantities only.
 - `PATCH /api/orders/:id/status` (farmer) — guarded transitions (see `DATABASE.md`); reject/cancel restores stock; COD payment reconciled; emits `order:*` + `notification:new`.
+
+## Addresses (consumer only, owner-scoped)
+
+- `GET /api/addresses` — own saved addresses, newest-first.
+- `POST /api/addresses` — `{label: Home|College|Other, house?, street?, area?, landmark?, pincode (6-digit), phone?, lat (-90…90), lng (-180…180), formattedAddress?}`. Max 10 per user.
+- `PUT /api/addresses/:id`, `DELETE /api/addresses/:id` — own addresses only (`404` otherwise).
 
 ## Notifications & health
 
 - `GET /api/notifications` — own, newest-first, max 100.
 - `GET /api/health` — `{service, database}`; doubles as the host readiness probe.
+- `GET /api/config` — public runtime config: `{deliveryFeePercent}`. Works without a database.
 
 ## Realtime events (Socket.IO, JWT handshake, `user:<id>` rooms)
 
@@ -52,7 +60,7 @@ Without a database, all `/api/*` except static handling return `503 DATABASE_UNA
 Bulk groups: `POST /api/bulk/groups` (any authenticated user; listing-bound farmer offer
 or named community group), `GET /api/bulk/groups`
 (`?status,model,pincode,farmerId,assignedFarmerId`), `GET /api/bulk/groups/:id`,
-`POST …/join` (consumer, atomic target guard; delivery address+pincode always required),
+`POST …/join` (consumer, atomic target guard; manual address+pincode or owned `addressId`, whose text+pincode+coordinates are snapshotted; foreign/malformed ids rejected),
 `POST …/leave`, `POST …/assign` (farmer self-assign with matching-stock eligibility check),
 `POST …/unassign`, `POST …/cancel` (creator or assignee), `POST …/fulfil` (assignee;
 transactionally mints one COD `DELIVERY` order per participant using join-time addresses).

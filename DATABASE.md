@@ -15,8 +15,10 @@ The API returns HTTP 503 on data routes until Atlas connects (`GET /api/health` 
 ## Collections (all in `backend/server.js`)
 
 **User** — `name*`, `email*` unique lowercase, `phone`, `passwordHash*` (bcrypt-12),
-`role*` (`FARMER|CONSUMER`), `farmName`, `location`, `pincode`, `rating`, `completedOrders`,
-`verified`, timestamps. Indexes: `email` (unique).
+`role*` (`FARMER|CONSUMER`), `farmName`, `location`, `pincode`, `farmLat/farmLng`
+(farmer-only, set via profile map), `farmAddress`, `rating`, `completedOrders`,
+`verified`, timestamps. Indexes: `email` (unique). Farm coordinates are returned
+only on the owner's own profile (`safeUser`); public listing views expose no coordinates.
 
 **Listing** — `farmerId*` ref User (indexed), `productName*`, `category` (indexed, default `Veg`),
 `description`, `price*` (≥0), `priceUnit` (default `kg`), `quantity*` (≥0),
@@ -36,11 +38,23 @@ Cart writes re-validate live stock and per-listing min/max on every add/update.
 `itemIndexes[]`, `status`), `subtotal/deliveryFee/discount/communitySavings/total`,
 `paymentMethod` (`COD|UPI_MOCK`), `paymentStatus` (`PENDING|PARTIALLY_PAID|PAID`),
 COD collection metadata, `status`, `fulfillment` (`DELIVERY|PICKUP`), `address/pincode`,
-`expectedAt`, timestamps. Status state machine (farmer-only transitions):
+`addressLabel`, `deliveryLat/deliveryLng` (snapshot from the chosen saved address;
+`null` for legacy manual addresses), `expectedAt`, timestamps.
+`deliveryFee` is always server-computed: `round2(subtotal × DELIVERY_FEE_PERCENT / 100)`;
+`total = round2(subtotal + fee)`. New orders are `DELIVERY`-only (stored `PICKUP` rows
+from before remain readable with their state machine intact). COD `PAID`
+reconciliation counts the fee in both collected and due amounts. Status state machine (farmer-only transitions):
 `ORDER_PLACED → FARMER_ACCEPTED|FARMER_REJECTED|CANCELLED → PREPARING → READY_FOR_PICKUP|OUT_FOR_DELIVERY → DELIVERED → COMPLETED`.
 Reject/cancel restores stock atomically; COD totals reconcile to collected sub-orders.
 
 **Notification** — `userId` (indexed), `kind`, `message`, `data`, `readAt`, timestamps.
+
+**Address** — consumer delivery addresses: `userId` (indexed), `label`
+(`Home|College|Other`), `house/street/area/landmark`, `pincode` (6-digit), `phone`,
+`lat` (−90…90), `lng` (−180…180), `formattedAddress`, timestamps. Max 10 per user;
+all reads/writes owner-scoped (a foreign id returns `404`, never hints at existence).
+Delivery coordinates on orders are visible only to the ordering consumer and the
+assigned farmer — never in public listing APIs.
 
 ## Planned (not yet implemented — do not invent tables in code until approved)
 

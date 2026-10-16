@@ -30,6 +30,7 @@
     "express": "^5.2.1",
     "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
+    "leaflet": "^1.9.4",
     "lucide": "^1.53.0",
     "mongoose": "^9.11.1",
     "socket.io": "^4.8.4",

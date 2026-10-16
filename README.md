@@ -50,7 +50,7 @@ API defaults to port 3000. Vite proxies `/api` and `/socket.io` to it. Configure
 - `GET /api/listings`, `GET /api/listings/:id`, authenticated farmer inventory, and farmer create/update/delete routes
 - Authenticated consumer cart read/add/update/remove routes
 - `POST /api/orders`, consumer order history/detail, and farmer order listing/status routes
-- Bulk groups: farmer create, public discovery, consumer join/leave, farmer cancel/fulfil (fulfil mints COD pickup orders)
+- Bulk groups: farmer create, public discovery, consumer join/leave, farmer cancel/fulfil (fulfil mints COD delivery orders)
 - `GET /api/farmer/forecast` (rule-based, no ML), `GET /api/uploads/config` + `POST /api/uploads/signature` (farmer)
 - `GET /api/notifications`
 - `GET /api/health`, `GET /api/ready`

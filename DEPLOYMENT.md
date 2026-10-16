@@ -51,7 +51,7 @@ Page: service **Variables** → add exactly these (paste values into Railway, ne
 | `MONGODB_URI` | Atlas URI from Step 1 |
 | `JWT_SECRET` | Generate: any ≥32-char random string (e.g. `openssl rand -base64 48`). Railway has no generator for this — paste your own |
 | `APP_ORIGIN` | Your Railway domain from Step 2 (e.g. `https://farmiqo-api.up.railway.app`) |
-| `DELIVERY_FEE` | `0` |
+| `DELIVERY_FEE_PERCENT` | `5` — uniform Farmiqo delivery fee percent, applied to DELIVERY orders only. If an older `DELIVERY_FEE` variable exists on the service, delete it — the backend no longer reads it |
 | `NODE_ENV` | `production` |
 | `BREVO_API_KEY` | Brevo API key — enables `/api/auth/forgot` mail (optional; reset stays honestly disabled without it) |
 | `RESET_FROM_EMAIL` | Verified Brevo sender address for reset mail (optional, with the key above) |

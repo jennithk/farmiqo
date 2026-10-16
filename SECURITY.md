@@ -60,6 +60,15 @@ Current state: the JWT and user profile live in WebView `localStorage`
 - **Account deletion:** password re-verification required; runs in one transaction (listings
   withdrawn, open bulk participations unwound, carts/notifications/reset rows removed, past
   orders preserved as financial records).
+- **Delivery addresses & coordinates:** address CRUD is strictly owner-scoped (foreign ids
+  return `404`, never distinguishing missing vs. foreign). Order coordinates are stored
+  server-side from owned addresses only and exposed solely to the ordering consumer and the
+  assigned farmer (existing order-ownership checks); public listing APIs carry no coordinates,
+  and farm coordinates appear only on the farmer's own profile. Join/order coordinates are
+  range-validated; map search goes directly from the browser to Nominatim (no key, no proxy).
+- **Delivery fee integrity:** computed only in `deliveryFeeFor()` from the authoritative
+  subtotal; client-submitted fee/total/discount fields are ignored by construction (the
+  route never reads them). `DELIVERY_FEE_PERCENT` is validated once at boot (0–100).
 
 ## CRITICAL: Atlas `0.0.0.0/0` migration plan (temporary test entry)
 

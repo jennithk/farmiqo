@@ -83,6 +83,7 @@ after(async () => {
 
 const farmer = {};
 const consumer = {};
+let bulkMapGroupId = '';
 let listingId;
 let communityMangoId;
 let communityTomatoId;
@@ -179,7 +180,9 @@ test('checkout snapshots price and clears cart', async () => {
     body: { paymentMethod: 'COD', fulfillment: 'DELIVERY', address: '12 Test Street', pincode: '520008' },
   });
   assert.equal(order.status, 201);
-  assert.equal(order.data?.data?.total, 64);
+  assert.equal(order.data?.data?.subtotal, 64);
+  assert.equal(order.data?.data?.deliveryFee, 3.2);
+  assert.equal(order.data?.data?.total, 67.2);
   assert.equal(order.data?.data?.status, 'ORDER_PLACED');
   consumer.orderId = order.data.data.orderId;
   const cart = await api('GET', '/api/cart', { token: consumer.token });
@@ -559,4 +562,224 @@ test('account deletion requires password and cleans up', async () => {
   assert.equal(login.status, 401);
   const gone = await api('GET', `/api/listings/${lid}`);
   assert.equal(gone.status, 404);
+});
+
+test('delivery fee table: 5% of subtotal', async () => {
+  const made = await api('POST', '/api/listings', {
+    token: farmer.token,
+    body: { productName: 'Fee Table Veg', price: 100, quantity: 100, harvestedAt: new Date().toISOString(), pincode: '520008' },
+  });
+  assert.equal(made.status, 201);
+  const lid = made.data?.data?.id;
+  for (const [qty, fee, total] of [[1, 5, 105], [2, 10, 210], [5, 25, 525], [10, 50, 1050], [20, 100, 2100]]) {
+    const order = await api('POST', '/api/orders', {
+      token: consumer.token,
+      body: { items: [{ listingId: lid, quantity: qty }], paymentMethod: 'COD', fulfillment: 'DELIVERY', address: '12 Test Street', pincode: '520008' },
+    });
+    assert.equal(order.status, 201);
+    assert.equal(order.data?.data?.deliveryFee, fee);
+    assert.equal(order.data?.data?.total, total);
+  }
+});
+
+test('delivery fee rounding, tamper-proofing, and no pickup orders', async () => {
+  const made = await api('POST', '/api/listings', {
+    token: farmer.token,
+    body: { productName: 'Odd Price Veg', price: 33.33, quantity: 50, harvestedAt: new Date().toISOString(), pincode: '520008' },
+  });
+  const lid = made.data?.data?.id;
+  const order = await api('POST', '/api/orders', {
+    token: consumer.token,
+    body: { items: [{ listingId: lid, quantity: 1 }], paymentMethod: 'COD', fulfillment: 'DELIVERY', address: '12 Test Street', pincode: '520008' },
+  });
+  assert.equal(order.data?.data?.deliveryFee, 1.67);
+  assert.equal(order.data?.data?.total, 35);
+  const tampered = await api('POST', '/api/orders', {
+    token: consumer.token,
+    body: { items: [{ listingId: lid, quantity: 1 }], paymentMethod: 'COD', fulfillment: 'DELIVERY', address: '12 Test Street', pincode: '520008', deliveryFee: 0.01, total: 1, discount: 50 },
+  });
+  assert.equal(tampered.data?.data?.deliveryFee, 1.67);
+  assert.equal(tampered.data?.data?.total, 35);
+  const pickup = await api('POST', '/api/orders', {
+    token: consumer.token,
+    body: { items: [{ listingId: lid, quantity: 1 }], paymentMethod: 'COD', fulfillment: 'PICKUP' },
+  });
+  assert.equal(pickup.status, 400);
+  assert.equal(pickup.data?.data?.code, 'INVALID_FULFILLMENT');
+  const noFulfillment = await api('POST', '/api/orders', {
+    token: consumer.token,
+    body: { items: [{ listingId: lid, quantity: 1 }], paymentMethod: 'COD', address: '12 Test Street', pincode: '520008' },
+  });
+  assert.equal(noFulfillment.status, 201);
+  assert.equal(noFulfillment.data?.data?.fulfillment, 'DELIVERY');
+});
+
+test('bulk fulfil applies the delivery fee', async () => {
+  const made = await api('POST', '/api/listings', {
+    token: farmer.token,
+    body: { productName: 'Bulk Fee Veg', price: 50, quantity: 20, harvestedAt: new Date().toISOString(), pincode: '520008' },
+  });
+  const lid = made.data?.data?.id;
+  const group = await api('POST', '/api/bulk/groups', { token: farmer.token, body: { listingId: lid, targetQuantity: 4 } });
+  const gid = group.data?.data?.groupId;
+  await api('POST', `/api/bulk/groups/${gid}/join`, { token: consumer.token, body: { quantity: 2, address: '12 Test Street', pincode: '520008' } });
+  await api('POST', `/api/bulk/groups/${gid}/join`, { token: consumer2.token, body: { quantity: 2, address: '9 Other Road', pincode: '520010' } });
+  const done = await api('POST', `/api/bulk/groups/${gid}/fulfil`, { token: farmer.token });
+  assert.equal(done.status, 201);
+  const detail = await api('GET', `/api/orders/${done.data.data.orders[0]}`, { token: consumer.token });
+  assert.equal(detail.data?.data?.deliveryFee, 5);
+  assert.equal(detail.data?.data?.total, 105);
+});
+
+test('address book CRUD with ownership isolation', async () => {
+  const badLat = await api('POST', '/api/addresses', { token: consumer.token, body: { pincode: '520008', lat: 91, lng: 80 } });
+  assert.equal(badLat.status, 400);
+  const badPin = await api('POST', '/api/addresses', { token: consumer.token, body: { pincode: '52', lat: 16, lng: 80 } });
+  assert.equal(badPin.status, 400);
+  const badLabel = await api('POST', '/api/addresses', { token: consumer.token, body: { label: 'Moon', pincode: '520008', lat: 16, lng: 80 } });
+  assert.equal(badLabel.status, 400);
+  const created = await api('POST', '/api/addresses', {
+    token: consumer.token,
+    body: { label: 'Home', house: '12-3', street: 'Test Street', area: 'Poranki', landmark: 'Near park', pincode: '520008', phone: '9000000001', lat: 16.5062, lng: 80.648, formattedAddress: '12-3 Test Street, Poranki' },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.data?.data?.lat, 16.5062);
+  const aid = created.data?.data?.id;
+  const mine = await api('GET', '/api/addresses', { token: consumer.token });
+  assert.ok(mine.data?.data?.some((a) => a.id === aid));
+  const others = await api('GET', '/api/addresses', { token: consumer2.token });
+  assert.ok(!others.data?.data?.some((a) => a.id === aid));
+  const foreignPut = await api('PUT', `/api/addresses/${aid}`, { token: consumer2.token, body: { house: 'X', street: 'Y', area: 'Z', pincode: '520008', lat: 16, lng: 80 } });
+  assert.equal(foreignPut.status, 404);
+  const foreignDel = await api('DELETE', `/api/addresses/${aid}`, { token: consumer2.token });
+  assert.equal(foreignDel.status, 404);
+  const renamed = await api('PUT', `/api/addresses/${aid}`, { token: consumer.token, body: { label: 'College', pincode: '520010' } });
+  assert.equal(renamed.status, 200);
+  assert.equal(renamed.data?.data?.label, 'College');
+  for (let i = 0; i < 9; i++) {
+    await api('POST', '/api/addresses', { token: consumer.token, body: { pincode: '520008', lat: 16, lng: 80 } });
+  }
+  const over = await api('POST', '/api/addresses', { token: consumer.token, body: { pincode: '520008', lat: 16, lng: 80 } });
+  assert.equal(over.status, 400);
+  consumer.addressId = aid;
+});
+
+test('orders snapshot the chosen address; strangers are rejected', async () => {
+  const made = await api('POST', '/api/listings', {
+    token: farmer.token,
+    body: { productName: 'Snapshot Veg', price: 20, quantity: 30, harvestedAt: new Date().toISOString(), pincode: '520008' },
+  });
+  const lid = made.data?.data?.id;
+  const foreign = await api('POST', '/api/orders', {
+    token: consumer2.token,
+    body: { items: [{ listingId: lid, quantity: 1 }], paymentMethod: 'COD', fulfillment: 'DELIVERY', addressId: consumer.addressId },
+  });
+  assert.equal(foreign.status, 404);
+  const malformed = await api('POST', '/api/orders', {
+    token: consumer.token,
+    body: { items: [{ listingId: lid, quantity: 1 }], paymentMethod: 'COD', fulfillment: 'DELIVERY', addressId: 'nope' },
+  });
+  assert.equal(malformed.status, 400);
+  const order = await api('POST', '/api/orders', {
+    token: consumer.token,
+    body: { items: [{ listingId: lid, quantity: 2 }], paymentMethod: 'COD', fulfillment: 'DELIVERY', addressId: consumer.addressId },
+  });
+  assert.equal(order.status, 201);
+  assert.equal(order.data?.data?.deliveryLat, 16.5062);
+  assert.equal(order.data?.data?.deliveryLng, 80.648);
+  assert.equal(order.data?.data?.addressLabel, 'College');
+  assert.ok(order.data?.data?.address.includes('Test Street'));
+  assert.equal(order.data?.data?.deliveryFee, 2);
+  assert.equal(order.data?.data?.total, 42);
+  consumer.orderId = order.data.data.orderId;
+  const legacy = await api('POST', '/api/orders', {
+    token: consumer.token,
+    body: { items: [{ listingId: lid, quantity: 1 }], paymentMethod: 'COD', fulfillment: 'DELIVERY', address: '12 Test Street', pincode: '520008' },
+  });
+  assert.equal(legacy.status, 201);
+  assert.equal(legacy.data?.data?.deliveryLat, null);
+});
+
+test('delivery coordinates stay private to the order parties', async () => {
+  const inbox = await api('GET', '/api/farmer/orders', { token: farmer.token });
+  const entry = inbox.data?.data?.find((e) => e.order?.orderId === consumer.orderId);
+  assert.ok(entry);
+  assert.equal(entry.order.deliveryLat, 16.5062);
+  const stranger = await api('GET', `/api/orders/${consumer.orderId}`, { token: consumer2.token });
+  assert.equal(stranger.status, 403);
+  const otherFarmer = await api('POST', '/api/auth/login', { body: { email: 'newfarmer@test.farm', password: 'password123' } });
+  const blocked = await api('GET', `/api/orders/${consumer.orderId}`, { token: otherFarmer.data.data.token });
+  assert.equal(blocked.status, 403);
+  const listings = await api('GET', '/api/listings');
+  assert.ok(listings.data?.data?.every((l) => l.farmLat === undefined && l.farmer?.farmLat === undefined));
+});
+
+test('farm coordinates are farmer-only and validated', async () => {
+  const badRole = await api('PUT', '/api/users/me', { token: consumer.token, body: { farmLat: 16.5, farmLng: 80.6 } });
+  assert.equal(badRole.status, 400);
+  const badLat = await api('PUT', '/api/users/me', { token: farmer.token, body: { farmLat: 200, farmLng: 80 } });
+  assert.equal(badLat.status, 400);
+  const ok = await api('PUT', '/api/users/me', { token: farmer.token, body: { farmLat: 16.52, farmLng: 80.66, farmAddress: 'Green Acres, Poranki' } });
+  assert.equal(ok.status, 200);
+  const me = await api('GET', '/api/auth/me', { token: farmer.token });
+  assert.equal(me.data?.data?.farmLat, 16.52);
+  assert.equal(me.data?.data?.farmAddress, 'Green Acres, Poranki');
+});
+
+test('fee configuration is public', async () => {
+  const config = await api('GET', '/api/config');
+  assert.equal(config.status, 200);
+  assert.equal(config.data?.data?.deliveryFeePercent, 5);
+});
+
+test('bulk join accepts a saved address and snapshots coordinates', async () => {
+  const made = await api('POST', '/api/listings', {
+    token: farmer.token,
+    body: { productName: 'Map Join Veg', price: 25, quantity: 40, harvestedAt: new Date().toISOString(), pincode: '520008' },
+  });
+  assert.equal(made.status, 201);
+  const group = await api('POST', '/api/bulk/groups', { token: farmer.token, body: { listingId: made.data?.data?.id, targetQuantity: 6 } });
+  const gid = group.data?.data?.groupId;
+  const joined = await api('POST', `/api/bulk/groups/${gid}/join`, { token: consumer.token, body: { quantity: 3, addressId: consumer.addressId } });
+  assert.equal(joined.status, 200);
+  const me = joined.data?.data?.participants.find((p) => p.quantity === 3);
+  assert.ok(me);
+  assert.ok(me.consumerName);
+  const foreign = await api('POST', `/api/bulk/groups/${gid}/join`, { token: consumer2.token, body: { quantity: 2, addressId: consumer.addressId } });
+  assert.equal(foreign.status, 404);
+  assert.equal(foreign.data?.data?.code, 'ADDRESS_NOT_FOUND');
+  const malformed = await api('POST', `/api/bulk/groups/${gid}/join`, { token: consumer2.token, body: { quantity: 2, addressId: 'nope' } });
+  assert.equal(malformed.status, 400);
+  bulkMapGroupId = gid;
+});
+
+test('bulk fulfil carries snapshot coordinates and farmer sees them', async () => {
+  const home2 = await api('POST', '/api/addresses', {
+    token: consumer2.token,
+    body: { label: 'Home', house: '9', street: 'Other Road', area: 'Poranki', pincode: '520010', lat: 16.51, lng: 80.65 },
+  });
+  assert.equal(home2.status, 201);
+  const joined = await api('POST', `/api/bulk/groups/${bulkMapGroupId}/join`, { token: consumer2.token, body: { quantity: 3, addressId: home2.data?.data?.id } });
+  assert.equal(joined.status, 200);
+  assert.equal(joined.data?.data?.status, 'ASSIGNED');
+  const done = await api('POST', `/api/bulk/groups/${bulkMapGroupId}/fulfil`, { token: farmer.token });
+  assert.equal(done.status, 201);
+  assert.equal(done.data?.data?.group?.status, 'COMPLETED');
+  for (const orderId of done.data.data.orders) {
+    const detail = await api('GET', `/api/orders/${orderId}`, { token: farmer.token });
+    assert.equal(detail.status, 200);
+    assert.equal(detail.data?.data?.fulfillment, 'DELIVERY');
+    assert.ok(Number.isFinite(detail.data?.data?.deliveryLat));
+    assert.ok(Number.isFinite(detail.data?.data?.deliveryLng));
+  }
+  const mine = await api('GET', '/api/farmer/bulk/groups', { token: farmer.token });
+  assert.equal(mine.status, 200);
+  const full = mine.data?.data?.find((g) => g.groupId === bulkMapGroupId);
+  assert.ok(full);
+  assert.ok(full.participants.every((p) => p.address && Number.isFinite(p.lat) && Number.isFinite(p.lng)));
+  const pub = await api('GET', `/api/bulk/groups/${bulkMapGroupId}`);
+  const pubFull = pub.data?.data;
+  assert.ok(pubFull.participants.every((p) => p.address === undefined && p.lat === undefined));
+  const denied = await api('GET', '/api/farmer/bulk/groups', { token: consumer.token });
+  assert.equal(denied.status, 403);
 });
