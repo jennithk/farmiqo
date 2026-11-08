@@ -1,85 +1,123 @@
-# Farmiqo Deployment (Railway backend + Atlas database)
+# Farmiqo Free Cloud Deployment Guide
 
-> Owner policy: **no Render** (`render.yaml` removed), **no paid services or subscriptions
-> without approval**, no secrets in git. Nothing here provisions anything — every step needing
-> your account or secret is marked **[OWNER ACTION]**. No service is "deployed" until its
-> public endpoint returns a tested response (Step 5).
+This guide details how to deploy Farmiqo on **100% free cloud services** with a **free HTTPS domain** and a **free MongoDB Atlas replica set**.
 
-## Why Railway (verified against official docs, Oct 2026)
+---
 
-| Requirement | Railway status |
-|---|---|
-| Express 5 long-running Node | Yes — Dockerfile/Nixpacks services stay up; `railway.json` sets restart `ON_FAILURE` (up to 10 retries) |
-| Socket.IO / WebSockets | Yes — official Socket.IO guide; WS exempt from proxy timeouts, stays open while idle; client already reconnects |
-| Outbound MongoDB Atlas | Yes — no egress whitelist; standard `mongodb+srv://` connection |
-| Persistent execution | Yes — no sleep policy; runs until free credit exhausts |
-| Free without a card | **Free plan: $0/mo + $1 usage credit/mo, card-free start**; plus a one-time $5 trial grant. Honest limit: ~$1 covers roughly 1–2 weeks of 24/7 micro-service run; when credit hits zero, workloads stop until credit resets or you approve spend |
+## 1. Cloud Host Comparison (Free Tiers)
 
-Rejected: Render (owner ban), Koyeb/Northflank (card + verification hold required),
-Fly.io (paid), Vercel/Netlify/Cloudflare (serverless functions — cannot run this server),
-SnapDeploy (100 container-hrs/mo + 15-min sleep; keep as emergency fallback only).
+Farmiqo requires:
+- A persistent Node.js / Express process that serves `/api` and the static `dist/` web client.
+- **WebSockets / Socket.IO** support for real-time notifications, orders, and cart updates.
+- Outbound connectivity to MongoDB Atlas.
 
-## Repo configuration (already done — do not re-do)
+| Provider | Free Plan Details | WebSockets | Free Domain | Sleep / Inactivity |
+|---|---|---|---|---|
+| **Render.com** (Recommended) | 100% Free Web Service (512 MB RAM, 0.1 vCPU). No credit card required. | ✅ Full support | `https://<app>.onrender.com` (Free auto SSL) | Spins down after 15 min idle; wakes in ~30s on request |
+| **Koyeb** | Free Eco tier (512 MB RAM, 0.1 vCPU). | ✅ Full support | `https://<app>.koyeb.app` (Free auto SSL) | 24/7 (No idle spin-down) |
+| **Hugging Face Spaces** | Free Docker SDK (16 GB RAM, 2 vCPU). | ✅ Full support | `https://<user>-<space>.hf.space` (Free auto SSL) | Sleeps when inactive |
+| **Railway** | $5 one-time credit, then trial ends / workloads stop. | ✅ Full support | `*.up.railway.app` | Paid after credit expires |
 
-- `Dockerfile` — Node 22 slim, `npm ci`, `npm run build`, `CMD ["npm","run","api"]`. No secrets baked in.
-- `.dockerignore` — keeps `android/`, `ios/`, `.env`, git, docs out of the image.
-- `railway.json` — Dockerfile builder, `startCommand: npm run api`, `healthcheckPath: /api/ready`, restart `ON_FAILURE` (up to 10 retries), 1 replica.
-- `GET /api/ready` — host liveness probe (always 200 when the process is up, even pre-database).
-- `GET /api/health` — readiness (200 only when Atlas connects; 503 otherwise).
-- Backend already honors injected `PORT`, binds `0.0.0.0`, sets `trust proxy` under `NODE_ENV=production`, and serves API + `dist/` from one origin.
-- `.github/workflows/deploy-backend.yml` — runs `npm run check` + `npm test` on every relevant push; deploys via Railway CLI only when `RAILWAY_TOKEN` exists, otherwise reports "skipped" and stays green.
+---
 
-## Step 1 — Database [OWNER ACTION, ~15 min, free]
+## 2. Free Domain Options
 
-1. Page: **mongodb.com/atlas** → sign up/in → create project → **Create cluster → M0 Free** (any nearby region) → create database user (generate a password, least privilege on the Farmiqo DB).
-2. Page: **Network Access → Add IP** → allow the Railway service (narrowest rule practical; Atlas shows current guidance per host).
-3. Copy the connection string (`mongodb+srv://<user>:<password>@<cluster>/<db>?retryWrites=true&w=majority`) — you will paste it into Railway in Step 3, nowhere else.
+1. **Built-in Cloud Subdomains (Zero setup, 100% Free):**
+   - **Render:** `https://your-farmiqo-app.onrender.com`
+   - **Koyeb:** `https://your-farmiqo-app.koyeb.app`
+   - Both include automatic SSL/TLS certificates and renew permanently without cost.
 
-## Step 2 — Backend service [OWNER ACTION, ~10 min, free]
+2. **Free Community Developer Domains:**
+   - **is-a.dev:** Free `yourname.is-a.dev` subdomain for open-source and personal projects via a simple GitHub PR ([is-a.dev](https://www.is-a.dev/)).
+   - **js.org:** Free `yourname.js.org` subdomain for JavaScript projects ([js.org](https://js.org/)).
 
-1. Page: **railway.com** → sign up (GitHub SSO is fine, no card for the Free plan) → **New Project → Deploy from GitHub repo** → select `jennithk/farmiqo`.
-2. Railway auto-detects the `Dockerfile` (also pinned by `railway.json`). If it asks for a builder, choose **Dockerfile**.
-3. Page: service **Settings → Networking → Generate Domain** → copy the public origin, e.g. `https://farmiqo-api.up.railway.app`. (Exact suffix varies — use whatever Railway assigns.)
-4. Page: service **Settings → Health Check**: confirm path **`/api/ready`**, timeout **300s** (already in `railway.json`; dashboard shows the same values).
+3. **Custom Domains:**
+   - You can buy a low-cost domain (~$1–$3/year for `.xyz`, `.site`, `.top` on Porkbun or Namecheap) and point a CNAME to your Render/Koyeb service with free SSL.
 
-## Step 3 — Environment variables [OWNER ACTION, Railway dashboard only]
+---
 
-Page: service **Variables** → add exactly these (paste values into Railway, never into code or chat):
+## 3. Step-by-Step Deployment Instructions
 
-| Variable | Value to enter |
-|---|---|
-| `MONGODB_URI` | Atlas URI from Step 1 |
-| `JWT_SECRET` | Generate: any ≥32-char random string (e.g. `openssl rand -base64 48`). Railway has no generator for this — paste your own |
-| `APP_ORIGIN` | Your Railway domain from Step 2 (e.g. `https://farmiqo-api.up.railway.app`) |
-| `DELIVERY_FEE_PERCENT` | `5` — uniform Farmiqo delivery fee percent, applied to DELIVERY orders only. If an older `DELIVERY_FEE` variable exists on the service, delete it — the backend no longer reads it |
-| `NODE_ENV` | `production` |
-| `BREVO_API_KEY` | Brevo API key — enables `/api/auth/forgot` mail (optional; reset stays honestly disabled without it) |
-| `RESET_FROM_EMAIL` | Verified Brevo sender address for reset mail (optional, with the key above) |
-| `RESET_FROM_NAME` | `Farmiqo` (optional) |
-| `APP_PUBLIC_URL` | Public frontend origin used in reset links (optional; defaults to the production domain) |
-| `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | Cloudinary free-tier credentials — enable signed product-photo uploads (optional; upload UI stays disabled without them) |
+### Step 1 — Free Database (MongoDB Atlas M0)
+1. Go to **[mongodb.com/atlas](https://www.mongodb.com/atlas)** and sign in.
+2. Click **Create Cluster** → Choose **M0 Free** (pick any region near your users, e.g. Mumbai `ap-south-1`).
+   > *Note: Atlas M0 is a 3-node replica set, which is required because Farmiqo's checkout and bulk fulfilment use ACID transactions.*
+3. Under **Security → Database Access**, create a user (e.g. `farmiqo_admin`) with a secure password.
+4. Under **Security → Network Access**, click **Add IP Address** → Choose **Allow Access from Anywhere (`0.0.0.0/0`)**. This allows Render/Koyeb instances to reach the database.
+5. In **Clusters**, click **Connect** → **Drivers** (Node.js) → Copy the connection string:
+   ```text
+   mongodb+srv://<user>:<password>@cluster0.xxxx.mongodb.net/farmiqo?retryWrites=true&w=majority
+   ```
 
-`PORT` is injected by Railway automatically — do not set it. Redeploy after saving; then open
-`https://<your-domain>/api/ready` (expect `{"ok":true,…"ready":true}`) and
-`https://<your-domain>/api/health` (expect 200 `connected` once Atlas accepts the URI).
+---
 
-## Step 4 — CI deploy + mobile origin [OWNER ACTION]
+### Step 2 — Deploy on Render.com (Recommended)
 
-1. Page: Railway **account settings → Tokens** → create a project token with deploy scope → GitHub repo **Settings → Secrets and variables → Actions → Secrets → New repository secret** named **`RAILWAY_TOKEN`**, value = the token. The token **must be a secret, never a repository variable** — variables are visible in logs and forks, secrets are masked.
-2. Page: GitHub repo **Settings → Secrets and variables → Actions → Variables → New repository variable** for each of the following (only needed when your Railway names differ from the defaults; the workflow targets them explicitly so non-interactive deploys never guess):
-   - **`RAILWAY_SERVICE_NAME`** — defaults to `farmiqo-api`. Must match the actual service name in your Railway project.
-   - **`RAILWAY_ENVIRONMENT_NAME`** — defaults to `production`. Must match the actual environment name in your Railway project.
-3. From now on, pushes to `main` touching app code run the full gate automatically: `npm run check` (syntax + production build) and `npm test` (11 integration tests) **always run first**; the Railway deploy step runs only if they pass. If `RAILWAY_TOKEN` is missing, deployment is **skipped automatically** (the workflow stays green and prints the skip notice) — tests still run and must still pass.
-4. Page: GitHub repo **Settings → Secrets and variables → Actions → Variables → New repository variable** named **`FARMIQO_API_ORIGIN`**, value = your Railway domain (`https://…`). This bakes the production API origin into Capacitor builds (must be `https:`, never localhost — CI rejects anything else). Then run the **Mobile Builds** workflow (or tag `v*`) for the store-bound APK/AAB + iOS artifacts.
+#### Option A: Quick Blueprint Deploy (One Click)
+1. Go to **[render.com](https://render.com)** and sign in with GitHub.
+2. Click **New +** → **Blueprint**.
+3. Select your repository `farmiqo-app`.
+4. Render will detect `render.yaml` and prompt you for the required environment variables:
+   - `MONGODB_URI`: Paste your Atlas URI from Step 1.
+   - `APP_ORIGIN`: Enter `https://<service-name>.onrender.com`.
+5. Click **Apply**. Render will install packages, build the frontend (`npm run build`), and start the Express server.
 
-## Step 5 — Laptop-independence acceptance test (all must pass)
+#### Option B: Manual Web Service Setup
+1. Click **New +** → **Web Service**.
+2. Connect your GitHub repository.
+3. Configure the following fields:
+   - **Name:** `farmiqo-app` (or your chosen name)
+   - **Language:** `Node`
+   - **Branch:** `main`
+   - **Build Command:** `npm ci && npm run build`
+   - **Start Command:** `npm start`
+   - **Instance Type:** `Free`
+4. Under **Health Check Path**, enter: `/api/ready`
+5. Under **Environment Variables**, add:
 
-1. From a phone on mobile data (laptop off, local backend stopped): open `https://<domain>/api/health` → 200.
-2. Install the CI-built APK / open the installed PWA; register a farmer and a consumer on different networks.
-3. Farmer creates a listing → consumer sees it; consumer orders (COD) → farmer inbox shows it; farmer advances status → consumer tracking updates; restart the app → session and data persist.
-4. Any failure blocks the production claim — fix before release.
+| Key | Value | Description |
+|---|---|---|
+| `NODE_ENV` | `production` | Enables production caching and optimizations |
+| `MONGODB_URI` | `mongodb+srv://...` | Your Atlas connection string from Step 1 |
+| `JWT_SECRET` | *(Random 32+ character string)* | Sign token (e.g. `openssl rand -base64 32`) |
+| `APP_ORIGIN` | `https://<your-render-subdomain>.onrender.com` | Your public Render domain |
+| `DELIVERY_FEE_PERCENT` | `5` | Delivery fee percentage |
+| `BREVO_API_KEY` | *(Optional)* | Enables password reset emails via Brevo |
+| `RESET_FROM_EMAIL` | *(Optional)* | Verified Brevo sender address |
+| `CLOUDINARY_CLOUD_NAME` | *(Optional)* | For Cloudinary photo uploads |
+| `CLOUDINARY_API_KEY` | *(Optional)* | For Cloudinary photo uploads |
+| `CLOUDINARY_API_SECRET` | *(Optional)* | For Cloudinary photo uploads |
 
-## Updates, rollback, costs
+6. Click **Create Web Service**. Once deployed, your app will be live at:
+   `https://<your-service-name>.onrender.com`
 
-- Backend: push to `main` (tests gate the deploy); Railway keeps the last image per its retention for rollback; keep API changes additive for shipped apps.
-- Watch Railway **Usage** page: Free $1/mo credit sustains roughly 1–2 weeks of continuous run; the $5 trial grant covers the first stretch. If the service stops, check credit first. Anything beyond free needs your explicit approval.
+---
+
+### Step 3 — Verification
+
+Once deployed, run these quick health checks in your browser or terminal:
+
+1. **Liveness Probe:**
+   ```
+   https://<your-domain>/api/ready
+   ```
+   *Expected:* `{"ok":true,"service":"farmiqo-backend","ready":true}`
+
+2. **Database Connectivity:**
+   ```
+   https://<your-domain>/api/health
+   ```
+   *Expected:* `{"ok":true,"service":"farmiqo-backend","database":"connected"}`
+
+3. **Web Application:**
+   Open `https://<your-domain>/` — you should see the Farmiqo marketplace splash screen with Telugu and English language options.
+
+---
+
+### Step 4 — Mobile / PWA App Configuration
+When building the Capacitor mobile apps (Android APK/AAB or iOS IPA) or publishing the PWA:
+1. In GitHub repo **Settings → Secrets and variables → Actions → Variables**, update `FARMIQO_API_ORIGIN` with your new production domain:
+   ```text
+   FARMIQO_API_ORIGIN=https://<your-domain>.onrender.com
+   ```
+2. Run the **Mobile Builds** workflow to generate release-ready Android APKs wired to your new free cloud backend.

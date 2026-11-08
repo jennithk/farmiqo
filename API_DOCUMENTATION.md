@@ -53,20 +53,33 @@ Without a database, all `/api/*` except static handling return `503 DATABASE_UNA
 
 ## Realtime events (Socket.IO, JWT handshake, `user:<id>` rooms)
 
-`listing:created|updated|stockUpdated`, `order:created|accepted|rejected|cancelled|preparing|ready|dispatched|delivered|completed`, `notification:new`, `cart:updated`.
+`listing:created|updated|stockUpdated`, `order:created|accepted|rejected|cancelled|preparing|ready|dispatched|delivered|completed`, `notification:new`, `cart:updated`, `bulk:updated`.
 
-## Planned (not implemented)
+## Advanced Implemented Endpoints
 
-Bulk groups: `POST /api/bulk/groups` (any authenticated user; listing-bound farmer offer
-or named community group), `GET /api/bulk/groups`
-(`?status,model,pincode,farmerId,assignedFarmerId`), `GET /api/bulk/groups/:id`,
-`POST …/join` (consumer, atomic target guard; manual address+pincode or owned `addressId`, whose text+pincode+coordinates are snapshotted; foreign/malformed ids rejected),
-`POST …/leave`, `POST …/assign` (farmer self-assign with matching-stock eligibility check),
-`POST …/unassign`, `POST …/cancel` (creator or assignee), `POST …/fulfil` (assignee;
-transactionally mints one COD `DELIVERY` order per participant using join-time addresses).
-Forecast: `GET /api/farmer/forecast` (rule-based, `insufficientData` flag when sparse).
-Auth recovery: `POST /api/auth/forgot` (generic 200; 503 until mail configured),
-`POST /api/auth/reset` (single-use, 1-hour tokens). Uploads: `GET /api/uploads/config`,
-`POST /api/uploads/signature` (farmer, Cloudinary signed params; 503 until configured).
-Account: `PUT /api/users/me` (editable name/phone/farm/location/pincode; email+role immutable),
-`DELETE /api/users/me` (password-gated; listings withdrawn, orders kept as records).
+- **Bulk groups:**
+  - `POST /api/bulk/groups` — Create offer (farmer, listing-bound) or community group (any authenticated user).
+  - `GET /api/bulk/groups` — List groups (`?status,model,pincode,farmerId,assignedFarmerId`).
+  - `GET /api/bulk/groups/:id` — Group details.
+  - `POST /api/bulk/groups/:id/join` — Join group with quantity and snapshotted delivery address.
+  - `POST /api/bulk/groups/:id/leave` — Leave group.
+  - `POST /api/bulk/groups/:id/assign` — Farmer self-assign with live matching inventory eligibility check.
+  - `POST /api/bulk/groups/:id/unassign` — Release farmer assignment.
+  - `POST /api/bulk/groups/:id/cancel` — Creator or assignee cancels group.
+  - `POST /api/bulk/groups/:id/fulfil` — Assignee fulfils group: transactionally decrements stock and mints one COD `DELIVERY` order per participant.
+- **Demand forecast:** `GET /api/farmer/forecast` — Rule-based 30-day forecast by pincode, with insufficient data flag when history is sparse.
+- **Password recovery:**
+  - `POST /api/auth/forgot` — Request password reset email (Brevo HTTPS integration; 503 until Brevo credentials configured).
+  - `POST /api/auth/reset` — Confirm reset with single-use 1-hour token.
+- **Photo uploads:**
+  - `GET /api/uploads/config` — Public upload settings (503 until Cloudinary configured).
+  - `POST /api/uploads/signature` — Farmer Cloudinary signed params.
+- **Account management:**
+  - `PUT /api/users/me` — Update profile (name, phone, farmName, location, pincode).
+  - `DELETE /api/users/me` — Password-gated account deletion (withdraws active listings, preserves past orders for accounting).
+
+## Future Planned Features (Not Yet Implemented)
+
+- **Payment Gateway:** Real online payments (Razorpay / UPI Intent / PhonePe SDK) to supplement Cash on Delivery.
+- **Push Notifications:** Native push delivery via Firebase Cloud Messaging (FCM) / Apple APNs.
+- **Reviews & Ratings:** Consumer star ratings and reviews on completed farmer orders.

@@ -558,6 +558,7 @@ app.post('/api/listings', authenticate, requireRole('FARMER'), async (req, res, 
     const maxQuantity = maxOrderQuantity == null || maxOrderQuantity === '' ? null : Number(maxOrderQuantity);
     if (
       typeof productName !== 'string' || !productName.trim() || productName.trim().length > 120 ||
+      typeof description !== 'string' || description.length > 2000 ||
       !Number.isFinite(Number(price)) || Number(price) < 0 ||
       !Number.isFinite(Number(quantity)) || Number(quantity) < 0 ||
       !Number.isFinite(minQuantity) || minQuantity <= 0 ||

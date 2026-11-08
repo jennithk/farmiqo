@@ -56,25 +56,15 @@ all reads/writes owner-scoped (a foreign id returns `404`, never hints at existe
 Delivery coordinates on orders are visible only to the ordering consumer and the
 assigned farmer — never in public listing APIs.
 
-## Planned (not yet implemented — do not invent tables in code until approved)
+**BulkGroup** — Community demand pooling & farmer bulk offers: `groupId` (unique), `productName`, `targetQuantity`, `minPerParticipant`, `maxPerParticipant`, `collectedQuantity`, `participantCount`, `participants` (`userId`, `quantity`, `joinedAt`, `address`, `pincode`, `deliveryLat`, `deliveryLng`, `addressLabel`, `addressId`), `model` (`offer|community`), `farmerId` (ref User), `assignedFarmerId` (ref User), `listingId` (ref Listing), `pincode`, `status` (`OPEN|TARGET_REACHED|ASSIGNED|COMPLETED|CANCELLED`), `slotDate`, `pickupNote`, `deliveryInfo`, `assignmentHistory`, timestamps.
+- Fulfil runs in a MongoDB transaction: conditional stock decrement plus one COD `DELIVERY` `Order` per participant using join-time snapshot addresses, advancing to `COMPLETED`.
 
-Bulk groups need: `BulkGroup` (name, product, targetQty, minQty, slotDate, pincode,
-`status: OPEN|AGGREGATED|CLOSED|FULFILLED`, createdBy) + `BulkMembership`
-(groupId, consumerId, quantity, status, timestamps) with a unique (groupId, consumerId)
-index (`groupId` unique, `farmerId`/`assignedFarmerId`/`listingId`/`pincode`/`status`/`model`).
-Two models: `offer` (farmer-bound listing, owner auto-assigned) and `community` (any
-authenticated user names a product; no listing required). `assignedFarmerId` +
-`assignmentHistory[]` record who supplies the group; `deliveryInfo` plus per-participant
-`address`/`pincode` (required at join) capture the delivery arrangement. Lifecycle:
-`OPEN → TARGET_REACHED → ASSIGNED → COMPLETED` plus `CANCELLED`
-(legacy `AGGREGATED`/`FULFILLED` rows still read correctly).
-Fulfil runs in one transaction: conditional stock decrement (offer listing, else the
-assigned farmer's best-stocked matching listing) plus one COD `DELIVERY` `Order` per
-participant using the join-time address (missing address aborts with `ADDRESS_REQUIRED`),
-then `COMPLETED`. Demand forecast is computed on read from `Order`/`Listing` (no new
-collection). Password recovery uses `PasswordReset` (`userId` indexed, `tokenHash`
-unique, TTL expiry on `expiresAt`) holding only SHA-256 hashes — delivery via Brevo
-HTTPS API (see `DEPLOYMENT.md` for keys).
+**PasswordReset** — Single-use password recovery tokens: `userId` (indexed ref User), `tokenHash` (SHA-256 hash, unique index), `expiresAt` (indexed with TTL expiration), timestamps. Email delivered via Brevo HTTPS API.
+
+## Planned / Future Models (Not Yet Implemented)
+
+- **Review / Rating** — Post-delivery farmer and produce ratings: `orderId`, `consumerId`, `farmerId`, `listingId`, `rating` (1–5), `comment`, timestamps.
+- **PaymentTransaction** — Audit log for live payment gateways (Razorpay/UPI).
 
 ## Migrations & backups
 

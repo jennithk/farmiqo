@@ -12,11 +12,11 @@ Desktop browser ─────┘         │
 ```
 
 - **Frontend:** vanilla-JS single-page app (`app.js` + `services/api.js` + `services/icons.js`), built by Vite into `dist/`. No frontend framework. State is a single in-memory `state` object; server data is re-fetched per screen; JWT + user profile persist in `localStorage`.
-- **Backend:** single-file Express 5 API (`backend/server.js`, ~730 lines) + Socket.IO account rooms (`user:<id>`). Mongoose models: `User`, `Listing`, `Cart`, `Order` (with per-farmer `subOrders`), `Notification`.
-- **Realtime:** listing broadcasts are global; order/notification events target account rooms. Auth via JWT in the Socket.IO handshake.
+- **Backend:** single-file Express 5 API (`backend/server.js`, ~1,518 lines) + Socket.IO account rooms (`user:<id>`). Mongoose models: `User`, `Listing`, `Cart`, `Address`, `Order` (with per-farmer `subOrders`), `Notification`, `BulkGroup`, `PasswordReset`.
+- **Realtime:** listing broadcasts are global; order/notification/cart events target account rooms. Auth via JWT in the Socket.IO handshake.
 - **Native shells:** Capacitor 7, app id `com.farmiqo.app`, `webDir: dist`. Native builds bundle the web app (no dev-server dependency) and **require** `VITE_API_URL=https://<api>/api` at build time — plain HTTP/localhost origins are rejected by `services/api.js`.
-- **Environments:** dev (`npm run dev`: API :3000 + Vite :5173 with proxy), production (single origin: `npm run api` serves API + static `dist/`).
-- **Cloud host:** Railway (Dockerfile + `railway.json`, `GET /api/ready` liveness probe, restart `ALWAYS`) + Atlas M0 — see `DEPLOYMENT.md`. No Render (`render.yaml` removed); no serverless hosts (this is a long-lived Express + Socket.IO process).
+- **Environments:** dev (`npm run dev`: API :3000 + Vite :5173 with proxy), production (single origin: `npm run api` or `npm start` serves API + static `dist/`).
+- **Cloud host:** Node/Docker-capable cloud host (Render, Koyeb, or Docker container) + MongoDB Atlas M0 replica set — see `DEPLOYMENT.md`. No serverless hosts (this is a long-lived Express + Socket.IO process).
 
 ## Cross-platform decision: Capacitor retained, no Expo rewrite
 

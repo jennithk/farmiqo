@@ -132,7 +132,7 @@ export function connectRealtime(onEvent = () => {}) {
     socket = io(base, { auth: { token }, transports: ['websocket', 'polling'], reconnection: true, reconnectionAttempts: Infinity });
     socketToken = token;
   }
-  const events = ['listing:created', 'listing:updated', 'listing:stockUpdated', 'order:created', 'order:accepted', 'order:rejected', 'order:cancelled', 'order:preparing', 'order:ready', 'order:dispatched', 'order:delivered', 'order:completed', 'notification:new', 'bulk:updated'];
+  const events = ['listing:created', 'listing:updated', 'listing:stockUpdated', 'order:created', 'order:accepted', 'order:rejected', 'order:cancelled', 'order:preparing', 'order:ready', 'order:dispatched', 'order:delivered', 'order:completed', 'notification:new', 'bulk:updated', 'cart:updated'];
   for (const event of events) socket.off(event);
   for (const event of events) socket.on(event, (payload) => onEvent(event, payload));
   return socket;
